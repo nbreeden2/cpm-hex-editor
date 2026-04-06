@@ -1,0 +1,404 @@
+;============================================================
+; FILE:    HEXHELP.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Help screen display. HLPSHOW draws a two-column help
+;   reference overlay, waits for any key, then returns.
+;   The overlay uses reverse-video for the header and footer
+;   lines and normal text for the body. Covers rows 1-24.
+;
+;   IMPORTANT: This module MUST be linked last. BMDATEND
+;   marks the end of all static code/data and serves as the
+;   gap buffer base address. L80 lays out [DSEG][CSEG] per
+;   module, so BMDATEND in CSEG captures all addresses.
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.0  1984-01-01  Initial release
+;============================================================
+
+;============================================================
+; FILE:    HEDIT.INC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Shared equates for all HEDIT modules.
+;   INCLUDE this as the first statement of every .MAC file.
+;------------------------------------------------------------
+
+;--- CP/M system addresses ----------------------------
+BDOS    EQU     0005H       ; BDOS call entry
+WBOOT   EQU     0000H       ; warm boot / exit
+DFTFCB  EQU     005CH       ; default FCB (arg 1)
+CMDTAIL EQU     0080H       ; command tail buffer
+
+;--- BDOS function numbers ----------------------------
+BF_CONIN  EQU   1           ; console input (wait)
+BF_CONOUT EQU   2           ; console output: E=char
+BF_RAWIO  EQU   6           ; direct I/O: E=FFH->in
+BF_PRTSTR EQU   9           ; print $-string: DE=addr
+BF_RDLINE EQU   10          ; buffered line input
+BF_CONST  EQU   11          ; console status
+BF_FOPEN  EQU   15          ; open file: DE=FCB
+BF_FCLOSE EQU   16          ; close file: DE=FCB
+BF_FDEL   EQU   19          ; delete: DE=FCB
+BF_FREAD  EQU   20          ; seq read: DE=FCB
+BF_FWRITE EQU   21          ; seq write: DE=FCB
+BF_FMAKE  EQU   22          ; create: DE=FCB
+BF_SETDMA EQU   26          ; set DMA: DE=addr
+BF_USRNUM EQU   32          ; get/set user: E=num
+BF_CURDSK EQU   25          ; get current disk
+
+;--- FCB field offsets --------------------------------
+FCB_DR  EQU     0           ; drive (0=default, 1=A, etc.)
+FCB_F1  EQU     1           ; filename (8 bytes)
+FCB_T1  EQU     9           ; extension (3 bytes)
+FCB_EX  EQU     12          ; extent number
+FCB_RC  EQU     15          ; record count
+FCB_CR  EQU     32          ; current record
+
+;--- ASCII control codes ------------------------------
+NUL     EQU     00H
+BEL     EQU     07H         ; bell
+BS      EQU     08H         ; backspace
+TAB     EQU     09H         ; horizontal tab
+LF      EQU     0AH         ; line feed
+CR      EQU     0DH         ; carriage return
+ESC     EQU     1BH         ; escape
+DEL     EQU     7FH         ; delete character
+CPMEOF  EQU     1AH         ; CP/M EOF marker (Ctrl-Z)
+CTRLK   EQU     0BH         ; Ctrl-K (prefix key)
+CTRLQ   EQU     11H         ; Ctrl-Q (prefix key)
+
+;--- Screen layout ------------------------------------
+SCRROWS EQU     24          ; terminal row count
+SCRCOLS EQU     80          ; terminal column count
+EDITROW EQU     20          ; hex data rows (rows 3-22)
+EDITFR  EQU     3           ; first edit row (1-based)
+INFOROW EQU     1           ; info bar row
+HDRROW  EQU     2           ; column header row
+SEPRROW EQU     23          ; separator (===) row
+STATROW EQU     24          ; status/message row
+
+;--- Hex display layout -------------------------------
+BYTESROW EQU    16          ; bytes per display row
+BYTESPG EQU     320         ; bytes per page (EDITROW*BYTESROW)
+HEXFCOL EQU     7           ; first hex column (1-based)
+ASCFCOL EQU     58          ; first ASCII column (1-based)
+GRPSEP  EQU     31          ; column of group separator space
+ADDRWID EQU     6           ; width of "XXXX: " address field
+
+;--- Hex input modes ----------------------------------
+MODE_HEX EQU   0           ; editing in hex field
+MODE_ASC EQU   1           ; editing in ASCII field
+MODE_OVR EQU   0           ; overwrite mode
+MODE_INS EQU   1           ; insert mode
+
+;--- SGR attribute byte values ------------------------
+ATTR_NRM EQU    00H         ; normal
+ATTR_BLD EQU    01H         ; bold
+ATTR_DIM EQU    02H         ; dim
+ATTR_REV EQU    07H         ; reverse video
+ATTR_CYN EQU    36H         ; cyan foreground
+ATTR_GRN EQU    32H         ; green foreground
+ATTR_YEL EQU    33H         ; yellow foreground
+ATTR_MAG EQU    35H         ; magenta foreground
+ATTR_RED EQU    31H         ; red foreground
+ATTR_BLU EQU    34H         ; blue foreground
+
+;--- Buffer descriptor field offsets ------------------
+BD_BSTAR EQU    0           ; 2: buffer base address
+BD_BSIZE EQU    2           ; 2: capacity in bytes
+BD_GAPBG EQU    4           ; 2: gap start offset
+BD_GAPEN EQU    6           ; 2: gap end offset
+BD_TXEND EQU    8           ; 2: logical data length
+BD_TOPOFF EQU   10          ; 2: top visible byte offset
+BD_CSOFF EQU    12          ; 2: cursor byte offset
+BD_MRKBG EQU    14          ; 2: block mark start (FFFF=unset)
+BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
+BD_MODIF EQU    18          ; 1: modified flag
+BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
+BD_FNAME EQU    20          ; 12: drive + filename + ext
+BD_SIZE  EQU    32          ; total descriptor size
+
+;--- File format codes --------------------------------
+FMT_BIN EQU     0           ; raw binary
+FMT_IHEX EQU    1           ; Intel HEX
+
+;--- Key types (from GETKEY) --------------------------
+KT_NONE EQU     0           ; no key
+KT_ACT  EQU     1           ; action code
+KT_CHAR EQU     2           ; printable character
+
+;--- Action codes -------------------------------------
+ACT_NONE  EQU   0
+ACT_CURUP EQU   1           ; cursor up (16 bytes)
+ACT_CURDN EQU   2           ; cursor down (16 bytes)
+ACT_CURLT EQU   3           ; cursor left (1 byte)
+ACT_CURRT EQU   4           ; cursor right (1 byte)
+ACT_PGUP  EQU   5           ; page up (320 bytes)
+ACT_PGDN  EQU   6           ; page down (320 bytes)
+ACT_HOME  EQU   7           ; start of row
+ACT_END   EQU   8           ; end of row
+ACT_FTOP  EQU   9           ; top of file
+ACT_FEND  EQU   10          ; end of file
+ACT_DELLF EQU   11          ; delete left (backspace)
+ACT_DELRT EQU   12          ; delete right
+ACT_TOGIN EQU   13          ; toggle ins/ovr
+ACT_TOGMD EQU   14          ; toggle hex/ascii mode
+ACT_FNDNX EQU   15          ; find next
+ACT_FSAVE EQU   16          ; save file
+ACT_FEXIT EQU   17          ; exit
+ACT_BLKMK EQU   18          ; block mark
+ACT_BLKCP EQU   19          ; block copy
+ACT_BLKDL EQU   20          ; block delete
+ACT_BLKPS EQU   21          ; block paste
+ACT_MENU  EQU   22          ; open ESC menu
+ACT_DELRW EQU   23          ; delete row (16 bytes)
+ACT_MAX   EQU   23          ; highest action code
+
+;--- Miscellaneous ------------------------------------
+MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
+CLIPMAX EQU     2048        ; clipboard buffer size
+SRCHMAX EQU     64          ; max search pattern length
+RECSIZ  EQU     128         ; CP/M record size
+MAXADDR EQU     0FFFFH      ; max displayable address
+
+
+;--- Imports ----------------------------------------------
+        EXTRN   OUTSTR          ; write $-string to console
+        EXTRN   OUTCHAR         ; write single char
+        EXTRN   CURGOTO         ; position cursor (B=row,C=col)
+        EXTRN   DIRTY           ; full redraw flag
+
+;--- Exports ----------------------------------------------
+        PUBLIC  HLPSHOW         ; show help and wait
+        PUBLIC  BMDATEND        ; end-of-data marker (must link last)
+
+;=============================================================
+; HLPSHOW - Display help screen, wait for keypress, return.
+; Entry:  (none)
+; Exit:   Screen dirty (caller sets DIRTY flag).
+;         All regs clobbered.
+;=============================================================
+        CSEG
+
+HLPSHOW:
+        ; Clear screen
+        LXI     D,HLPCLR
+        CALL    OUTSTR
+
+        ; Draw header (row 1, reverse video, full width)
+        MVI     B,1
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,HLPHDR
+        CALL    OUTSTR
+
+        ; Draw help lines (rows 3-24, 2 columns)
+        ; Index stored in HLPIDX (registers clobbered by calls)
+        XRA     A
+        STA     HLPIDX
+
+HLPLP:  LDA     HLPIDX
+        CPI     HLPLINES
+        JNC     HLPWAIT
+
+        ; Position left column (row = index + 3, col = 1)
+        ADI     3
+        MOV     B,A
+        MVI     C,1
+        CALL    CURGOTO
+
+        ; Get left text pointer from table
+        LDA     HLPIDX
+        MOV     L,A
+        MVI     H,0
+        DAD     H               ; *2
+        LXI     D,HLPLTBL
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        CALL    OUTSTR
+
+        ; Position right column (row = index + 3, col = 41)
+        LDA     HLPIDX
+        ADI     3
+        MOV     B,A
+        MVI     C,41
+        CALL    CURGOTO
+
+        ; Get right text pointer from table
+        LDA     HLPIDX
+        MOV     L,A
+        MVI     H,0
+        DAD     H
+        LXI     D,HLPRTBL
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        CALL    OUTSTR
+
+        ; Increment index
+        LDA     HLPIDX
+        INR     A
+        STA     HLPIDX
+        JMP     HLPLP
+
+HLPWAIT:
+        ; Footer prompt at row 24
+        MVI     B,24
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,HLPFTR
+        CALL    OUTSTR
+
+        ; Drain any buffered keyboard input so a stale
+        ; keystroke from the menu cannot dismiss help instantly
+HLPDRN: MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JNZ     HLPDRN          ; keep draining
+
+        ; Wait for a fresh keypress (non-blocking poll)
+HLPKEY: MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JZ      HLPKEY          ; no char yet, keep polling
+
+        ; Clear the footer line before returning
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,HLPCEL
+        CALL    OUTSTR
+        ; Reset attribute
+        LXI     D,HLPNRM
+        CALL    OUTSTR
+
+        ; Set dirty flag so caller redraws
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;=============================================================
+; String constants
+;=============================================================
+
+HLPCLR:  DB     ESC,'[0m',ESC,'[2J',ESC,'[H$'
+HLPCEL:  DB     ESC,'[K$'
+HLPNRM:  DB     ESC,'[0m$'
+HLPHDR:  DB     ESC,'[7m'
+         DB     ' HEDIT v1.0 Key Reference'
+         DB     '                                       '
+         DB     '              '
+         DB     ESC,'[0m$'
+HLPFTR:  DB     ESC,'[7m'
+         DB     ' Press any key to return...             '
+         DB     '                                        '
+         DB     ESC,'[0m$'
+
+; Left column lines (40 chars max each, $-terminated)
+HLL01:  DB  ' NAVIGATION                $'
+HLL02:  DB  ' Up/^E    Up 16 bytes      $'
+HLL03:  DB  ' Down/^X  Down 16 bytes    $'
+HLL04:  DB  ' Left/^S  Left 1 byte      $'
+HLL05:  DB  ' Right/^D Right 1 byte     $'
+HLL06:  DB  ' PgUp/^R  Up 320 bytes     $'
+HLL07:  DB  ' PgDn/^C  Down 320 bytes   $'
+HLL08:  DB  ' Home/^QS Start of row     $'
+HLL09:  DB  ' End/^QD  End of row       $'
+HLL10:  DB  ' ^QR      Top of file      $'
+HLL11:  DB  ' ^QC      End of file      $'
+HLL12:  DB  '                           $'
+HLL13:  DB  '                           $'
+HLL14:  DB  '                           $'
+HLL15:  DB  '                           $'
+
+; Right column lines
+HLR01:  DB  ' EDITING                   $'
+HLR02:  DB  ' 0-9,A-F  Hex byte input   $'
+HLR03:  DB  ' Tab/^I   Toggle HEX/ASCII $'
+HLR04:  DB  ' ^V/Ins   Toggle INS/OVR   $'
+HLR05:  DB  ' BS/^H    Delete left       $'
+HLR06:  DB  ' Del/^G   Delete right      $'
+HLR07:  DB  ' ^Y       Delete row (16B)  $'
+HLR08:  DB  ' ^KB/F3   Block mark        $'
+HLR09:  DB  ' ^KC      Block copy        $'
+HLR10:  DB  ' ^KD      Block delete      $'
+HLR11:  DB  ' ^KP      Block paste       $'
+HLR12:  DB  ' ^KS/F2   Save file         $'
+HLR13:  DB  ' ^L/F1    Find next         $'
+HLR14:  DB  ' ESC/F4   Menu              $'
+HLR15:  DB  '                           $'
+
+HLPLINES EQU    15              ; number of help line pairs
+
+; Pointer tables in CSEG: immune to DSEG corruption from
+; gap buffer or other data operations.
+; Left column text pointer table (word per line)
+HLPLTBL:
+        DW      HLL01
+        DW      HLL02
+        DW      HLL03
+        DW      HLL04
+        DW      HLL05
+        DW      HLL06
+        DW      HLL07
+        DW      HLL08
+        DW      HLL09
+        DW      HLL10
+        DW      HLL11
+        DW      HLL12
+        DW      HLL13
+        DW      HLL14
+        DW      HLL15
+
+; Right column text pointer table
+HLPRTBL:
+        DW      HLR01
+        DW      HLR02
+        DW      HLR03
+        DW      HLR04
+        DW      HLR05
+        DW      HLR06
+        DW      HLR07
+        DW      HLR08
+        DW      HLR09
+        DW      HLR10
+        DW      HLR11
+        DW      HLR12
+        DW      HLR13
+        DW      HLR14
+        DW      HLR15
+
+;------------------------------------------------------------
+; BMDATEND - marks the end of all static data.
+; This MUST be in CSEG at the very end of the last-linked
+; module, because L80 lays out [DSEG][CSEG] per module.
+; Placing it in DSEG would miss HEXHELP's CSEG content
+; (HLPSHOW code, help strings, pointer tables), and the
+; gap buffer starting at BMDATEND would overwrite them.
+;------------------------------------------------------------
+BMDATEND EQU    $
+
+;=============================================================
+; DATA SEGMENT
+;=============================================================
+        DSEG
+
+; Loop index for help display
+HLPIDX: DB      0
+
+        END
+

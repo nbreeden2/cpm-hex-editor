@@ -1,0 +1,656 @@
+;============================================================
+; FILE:    HEXSRCH.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Search module for the hex editor. Supports searching
+;   by hex byte patterns (space-separated pairs) or by
+;   ASCII text strings. Searches forward from cursor with
+;   wraparound.
+;
+;   SRFIND  - Prompt for search type and pattern, then find.
+;   SRFNDNX - Find next occurrence of current pattern.
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.0  1984-01-01  Initial release
+;============================================================
+
+;============================================================
+; FILE:    HEDIT.INC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Shared equates for all HEDIT modules.
+;   INCLUDE this as the first statement of every .MAC file.
+;------------------------------------------------------------
+
+;--- CP/M system addresses ----------------------------
+BDOS    EQU     0005H       ; BDOS call entry
+WBOOT   EQU     0000H       ; warm boot / exit
+DFTFCB  EQU     005CH       ; default FCB (arg 1)
+CMDTAIL EQU     0080H       ; command tail buffer
+
+;--- BDOS function numbers ----------------------------
+BF_CONIN  EQU   1           ; console input (wait)
+BF_CONOUT EQU   2           ; console output: E=char
+BF_RAWIO  EQU   6           ; direct I/O: E=FFH->in
+BF_PRTSTR EQU   9           ; print $-string: DE=addr
+BF_RDLINE EQU   10          ; buffered line input
+BF_CONST  EQU   11          ; console status
+BF_FOPEN  EQU   15          ; open file: DE=FCB
+BF_FCLOSE EQU   16          ; close file: DE=FCB
+BF_FDEL   EQU   19          ; delete: DE=FCB
+BF_FREAD  EQU   20          ; seq read: DE=FCB
+BF_FWRITE EQU   21          ; seq write: DE=FCB
+BF_FMAKE  EQU   22          ; create: DE=FCB
+BF_SETDMA EQU   26          ; set DMA: DE=addr
+BF_USRNUM EQU   32          ; get/set user: E=num
+BF_CURDSK EQU   25          ; get current disk
+
+;--- FCB field offsets --------------------------------
+FCB_DR  EQU     0           ; drive (0=default, 1=A, etc.)
+FCB_F1  EQU     1           ; filename (8 bytes)
+FCB_T1  EQU     9           ; extension (3 bytes)
+FCB_EX  EQU     12          ; extent number
+FCB_RC  EQU     15          ; record count
+FCB_CR  EQU     32          ; current record
+
+;--- ASCII control codes ------------------------------
+NUL     EQU     00H
+BEL     EQU     07H         ; bell
+BS      EQU     08H         ; backspace
+TAB     EQU     09H         ; horizontal tab
+LF      EQU     0AH         ; line feed
+CR      EQU     0DH         ; carriage return
+ESC     EQU     1BH         ; escape
+DEL     EQU     7FH         ; delete character
+CPMEOF  EQU     1AH         ; CP/M EOF marker (Ctrl-Z)
+CTRLK   EQU     0BH         ; Ctrl-K (prefix key)
+CTRLQ   EQU     11H         ; Ctrl-Q (prefix key)
+
+;--- Screen layout ------------------------------------
+SCRROWS EQU     24          ; terminal row count
+SCRCOLS EQU     80          ; terminal column count
+EDITROW EQU     20          ; hex data rows (rows 3-22)
+EDITFR  EQU     3           ; first edit row (1-based)
+INFOROW EQU     1           ; info bar row
+HDRROW  EQU     2           ; column header row
+SEPRROW EQU     23          ; separator (===) row
+STATROW EQU     24          ; status/message row
+
+;--- Hex display layout -------------------------------
+BYTESROW EQU    16          ; bytes per display row
+BYTESPG EQU     320         ; bytes per page (EDITROW*BYTESROW)
+HEXFCOL EQU     7           ; first hex column (1-based)
+ASCFCOL EQU     58          ; first ASCII column (1-based)
+GRPSEP  EQU     31          ; column of group separator space
+ADDRWID EQU     6           ; width of "XXXX: " address field
+
+;--- Hex input modes ----------------------------------
+MODE_HEX EQU   0           ; editing in hex field
+MODE_ASC EQU   1           ; editing in ASCII field
+MODE_OVR EQU   0           ; overwrite mode
+MODE_INS EQU   1           ; insert mode
+
+;--- SGR attribute byte values ------------------------
+ATTR_NRM EQU    00H         ; normal
+ATTR_BLD EQU    01H         ; bold
+ATTR_DIM EQU    02H         ; dim
+ATTR_REV EQU    07H         ; reverse video
+ATTR_CYN EQU    36H         ; cyan foreground
+ATTR_GRN EQU    32H         ; green foreground
+ATTR_YEL EQU    33H         ; yellow foreground
+ATTR_MAG EQU    35H         ; magenta foreground
+ATTR_RED EQU    31H         ; red foreground
+ATTR_BLU EQU    34H         ; blue foreground
+
+;--- Buffer descriptor field offsets ------------------
+BD_BSTAR EQU    0           ; 2: buffer base address
+BD_BSIZE EQU    2           ; 2: capacity in bytes
+BD_GAPBG EQU    4           ; 2: gap start offset
+BD_GAPEN EQU    6           ; 2: gap end offset
+BD_TXEND EQU    8           ; 2: logical data length
+BD_TOPOFF EQU   10          ; 2: top visible byte offset
+BD_CSOFF EQU    12          ; 2: cursor byte offset
+BD_MRKBG EQU    14          ; 2: block mark start (FFFF=unset)
+BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
+BD_MODIF EQU    18          ; 1: modified flag
+BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
+BD_FNAME EQU    20          ; 12: drive + filename + ext
+BD_SIZE  EQU    32          ; total descriptor size
+
+;--- File format codes --------------------------------
+FMT_BIN EQU     0           ; raw binary
+FMT_IHEX EQU    1           ; Intel HEX
+
+;--- Key types (from GETKEY) --------------------------
+KT_NONE EQU     0           ; no key
+KT_ACT  EQU     1           ; action code
+KT_CHAR EQU     2           ; printable character
+
+;--- Action codes -------------------------------------
+ACT_NONE  EQU   0
+ACT_CURUP EQU   1           ; cursor up (16 bytes)
+ACT_CURDN EQU   2           ; cursor down (16 bytes)
+ACT_CURLT EQU   3           ; cursor left (1 byte)
+ACT_CURRT EQU   4           ; cursor right (1 byte)
+ACT_PGUP  EQU   5           ; page up (320 bytes)
+ACT_PGDN  EQU   6           ; page down (320 bytes)
+ACT_HOME  EQU   7           ; start of row
+ACT_END   EQU   8           ; end of row
+ACT_FTOP  EQU   9           ; top of file
+ACT_FEND  EQU   10          ; end of file
+ACT_DELLF EQU   11          ; delete left (backspace)
+ACT_DELRT EQU   12          ; delete right
+ACT_TOGIN EQU   13          ; toggle ins/ovr
+ACT_TOGMD EQU   14          ; toggle hex/ascii mode
+ACT_FNDNX EQU   15          ; find next
+ACT_FSAVE EQU   16          ; save file
+ACT_FEXIT EQU   17          ; exit
+ACT_BLKMK EQU   18          ; block mark
+ACT_BLKCP EQU   19          ; block copy
+ACT_BLKDL EQU   20          ; block delete
+ACT_BLKPS EQU   21          ; block paste
+ACT_MENU  EQU   22          ; open ESC menu
+ACT_DELRW EQU   23          ; delete row (16 bytes)
+ACT_MAX   EQU   23          ; highest action code
+
+;--- Miscellaneous ------------------------------------
+MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
+CLIPMAX EQU     2048        ; clipboard buffer size
+SRCHMAX EQU     64          ; max search pattern length
+RECSIZ  EQU     128         ; CP/M record size
+MAXADDR EQU     0FFFFH      ; max displayable address
+
+
+;--- Imports ----------------------------------------------
+        EXTRN   CURBDP          ; current buffer descriptor
+        EXTRN   DIRTY           ; screen redraw flag
+        EXTRN   GBLOGRD         ; read byte at logical offset HL
+        EXTRN   GBTXEND         ; get text end -> HL
+        EXTRN   GBCSOFF         ; get cursor offset -> HL
+        EXTRN   GBMVTO          ; move cursor to offset HL
+        EXTRN   STATMSG         ; status bar message
+        EXTRN   STATCLR         ; clear status bar
+        EXTRN   OUTSTR          ; write $-string
+        EXTRN   OUTCHAR         ; write single char
+        EXTRN   CURGOTO         ; position cursor (B=row,C=col)
+
+;--- Exports ----------------------------------------------
+        PUBLIC  SRFIND          ; find (prompt for pattern)
+        PUBLIC  SRFNDNX         ; find next occurrence
+
+;=============================================================
+; SRFIND - Prompt for search type, then pattern, then search.
+; Entry:  (none)
+; Exit:   Cursor moved to match if found; all regs clobbered.
+;=============================================================
+        CSEG
+
+SRFIND:
+        ; Prompt for search type: Hex or ASCII
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,SRTYPMT
+        CALL    OUTSTR
+
+        ; Wait for H or A (or ESC to cancel)
+SRTWT:  MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JZ      SRTWT           ; no char, poll
+
+        CPI     ESC
+        JZ      SRCANC          ; cancelled
+
+        CPI     'H'
+        JZ      SRTHEX
+        CPI     'h'
+        JZ      SRTHEX
+        CPI     'A'
+        JZ      SRTASC
+        CPI     'a'
+        JZ      SRTASC
+        JMP     SRTWT           ; invalid, try again
+
+SRTHEX: MVI     A,0
+        STA     SRCHTYP         ; type = hex
+        ; Prompt for hex bytes
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,SRHXPMT
+        CALL    OUTSTR
+        JMP     SRREAD
+
+SRTASC: MVI     A,1
+        STA     SRCHTYP         ; type = ASCII
+        ; Prompt for ASCII text
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,SRASPMT
+        CALL    OUTSTR
+
+SRREAD: ; Read input line
+        LXI     D,SRINBUF
+        MVI     C,BF_RDLINE
+        CALL    BDOS
+        LDA     SRINBUF+1       ; actual length
+        ORA     A
+        JZ      SRCANC          ; empty = cancel
+
+        ; Parse based on type
+        LDA     SRCHTYP
+        ORA     A
+        JZ      SRDOHX          ; hex mode
+
+        ; ASCII mode: copy input directly to SRCHBUF
+        LDA     SRINBUF+1       ; length
+        MOV     B,A             ; B = count
+        STA     SRCHLEN
+        LXI     H,SRINBUF+2     ; source
+        LXI     D,SRCHBUF       ; dest
+SRACPL: MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCR     B
+        JNZ     SRACPL
+        JMP     SRFNDNX         ; now search
+
+SRDOHX: ; Parse hex byte pairs from SRINBUF+2
+        CALL    SRHXPAR
+        LDA     SRCHLEN
+        ORA     A
+        JZ      SRCANC          ; no valid bytes parsed
+        JMP     SRFNDNX         ; now search
+
+SRCANC: ; Cancelled or empty
+        CALL    STATCLR
+        RET
+
+;=============================================================
+; SRFNDNX - Find next occurrence of SRCHBUF[0..SRCHLEN-1].
+; Searches forward from CSOFF+1, wraps around if needed.
+; Entry:  SRCHBUF and SRCHLEN must be valid.
+; Exit:   Cursor moved to match if found; all regs clobbered.
+;=============================================================
+SRFNDNX:
+        LDA     SRCHLEN
+        ORA     A
+        JZ      SRNOPAT         ; no pattern loaded
+
+        ; Get cursor offset + 1 as start position
+        CALL    GBCSOFF         ; HL = cursor offset
+        INX     H
+        SHLD    SRSTART         ; start of forward search
+
+        ; Get text end
+        CALL    GBTXEND         ; HL = TXEND
+        SHLD    SRTXEND
+
+        ; Reset wrap flag
+        XRA     A
+        STA     SRWRAP
+
+        ; Begin forward search from SRSTART
+        LHLD    SRSTART
+        SHLD    SRPOS           ; current probe position
+
+SRFLP:
+        ; Check if SRPOS + SRCHLEN > SRTXEND
+        LHLD    SRPOS
+        LDA     SRCHLEN
+        MOV     C,A
+        MVI     B,0
+        DAD     B               ; HL = SRPOS + SRCHLEN
+        XCHG                    ; DE = SRPOS + SRCHLEN
+        LHLD    SRTXEND         ; HL = SRTXEND
+        ; Compare: if SRTXEND < SRPOS+len, go to wrap
+        MOV     A,H
+        CMP     D
+        JC      SRFWRP          ; TXEND.H < (pos+len).H
+        JNZ     SRFCHK          ; TXEND.H > (pos+len).H: ok
+        MOV     A,L
+        CMP     E
+        JC      SRFWRP          ; TXEND < pos+len: past end
+
+SRFCHK:
+        ; Try to match at SRPOS
+        LHLD    SRPOS
+        CALL    SRTRY           ; Z set if match
+        JZ      SRFND
+
+        ; Advance SRPOS by 1
+        LHLD    SRPOS
+        INX     H
+        SHLD    SRPOS
+        JMP     SRFLP
+
+SRFWRP:
+        ; Check if we already wrapped
+        LDA     SRWRAP
+        ORA     A
+        JNZ     SRNFND          ; second time around = not found
+
+        ; Wrap: search from 0 to SRSTART
+        MVI     A,1
+        STA     SRWRAP
+        LXI     H,0
+        SHLD    SRPOS
+
+SRWLP:
+        ; Check SRPOS < SRSTART
+        LHLD    SRPOS
+        XCHG                    ; DE = SRPOS
+        LHLD    SRSTART         ; HL = SRSTART
+        ; if SRSTART <= SRPOS then stop
+        MOV     A,H
+        CMP     D
+        JC      SRNFND          ; SRSTART.H < SRPOS.H: done
+        JNZ     SRWCHK          ; SRSTART.H > SRPOS.H: continue
+        MOV     A,L
+        CMP     E
+        JNC     SRNFND          ; SRSTART >= SRPOS: done
+
+SRWCHK:
+        ; Check SRPOS + SRCHLEN <= SRTXEND
+        LHLD    SRPOS
+        LDA     SRCHLEN
+        MOV     C,A
+        MVI     B,0
+        DAD     B               ; HL = SRPOS + SRCHLEN
+        XCHG                    ; DE = SRPOS + SRCHLEN
+        LHLD    SRTXEND
+        MOV     A,H
+        CMP     D
+        JC      SRNFND          ; past end
+        JNZ     SRWOK
+        MOV     A,L
+        CMP     E
+        JC      SRNFND
+
+SRWOK:  LHLD    SRPOS
+        CALL    SRTRY
+        JZ      SRFND
+
+        LHLD    SRPOS
+        INX     H
+        SHLD    SRPOS
+        JMP     SRWLP
+
+SRFND:
+        ; Found at SRPOS: move cursor there
+        XRA     A
+        STA     SRWRAP          ; reset wrap flag
+        LHLD    SRPOS
+        CALL    GBMVTO          ; move cursor to match
+        MVI     A,1
+        STA     DIRTY
+
+        ; Build "Found at offset XXXX" message
+        ; Convert SRPOS to hex and display
+        LHLD    SRPOS
+        SHLD    SRFOFF          ; save for display
+        LXI     D,SRFMSG
+        JMP     STATMSG
+
+SRNFND:
+        XRA     A
+        STA     SRWRAP
+        LXI     D,SRNFMS
+        JMP     STATMSG
+
+SRNOPAT:
+        ; No pattern - prompt via SRFIND instead
+        JMP     SRFIND
+
+;=============================================================
+; SRTRY - Try to match SRCHBUF at logical offset HL.
+; Entry:  HL = logical start offset to try
+; Exit:   Zero flag set if full match, clear if no match.
+;         Regs: all clobbered.
+;=============================================================
+SRTRY:
+        SHLD    SRTPOS          ; save probe position
+        LDA     SRCHLEN
+        MOV     B,A             ; B = bytes remaining
+        LXI     D,SRCHBUF       ; DE = pattern pointer
+        LHLD    SRTPOS          ; HL = current offset
+
+STRLP:
+        MOV     A,B
+        ORA     A
+        JZ      STRMCH          ; all bytes matched
+
+        ; Read logical byte at HL from gap buffer
+        PUSH    B
+        PUSH    D
+        PUSH    H
+        CALL    GBLOGRD         ; A = byte at logical HL
+        STA     SRTBYT          ; save byte (GBLOGRD clobbers regs)
+        POP     H
+        POP     D
+        POP     B
+
+        ; Compare with pattern byte
+        LDAX    D               ; A = pattern byte
+        MOV     C,A             ; C = pattern byte
+        LDA     SRTBYT          ; A = text byte
+        CMP     C               ; compare
+        RNZ                     ; no match (NZ flag set)
+
+        INX     D               ; advance pattern
+        INX     H               ; advance offset
+        DCR     B
+        JMP     STRLP
+
+STRMCH: ; All bytes matched
+        XRA     A               ; ensure Z set
+        RET
+
+;=============================================================
+; SRHXPAR - Parse hex byte pairs from SRINBUF+2.
+; Input string: space-separated hex pairs, e.g. "FF 00 A5"
+; Exit:  SRCHBUF filled with raw bytes, SRCHLEN = count.
+;        Regs: all clobbered.
+;=============================================================
+SRHXPAR:
+        LDA     SRINBUF+1       ; input length
+        ORA     A
+        JZ      SHPDON
+        MOV     B,A             ; B = chars remaining
+        LXI     H,SRINBUF+2     ; HL = source pointer
+        LXI     D,SRCHBUF       ; DE = dest pointer
+        MVI     C,0             ; C = byte count
+        XRA     A
+        STA     SHPHI           ; high nibble flag (0=need high)
+        STA     SHPACC          ; accumulator
+
+SHPLP:  MOV     A,B
+        ORA     A
+        JZ      SHPFIN          ; end of input
+
+        MOV     A,M             ; read char
+        INX     H               ; advance source
+        DCR     B               ; decrement count
+
+        ; Skip spaces
+        CPI     ' '
+        JZ      SHPSPC
+
+        ; Convert hex char to nibble value
+        CALL    SHPCHR          ; A = nibble (0-15), CY if invalid
+        JC      SHPLP           ; invalid char, skip
+
+        ; Accumulate nibble
+        PUSH    PSW             ; save nibble
+        LDA     SHPHI
+        ORA     A
+        POP     PSW
+        JNZ     SHPLO           ; already have high nibble
+
+        ; High nibble: shift left 4
+        RLC
+        RLC
+        RLC
+        RLC
+        ANI     0F0H
+        STA     SHPACC
+        MVI     A,1
+        STA     SHPHI           ; flag: have high nibble
+        JMP     SHPLP
+
+SHPLO:  ; Low nibble: combine with high
+        PUSH    H               ; save source (SHPACC load clobbers nothing, but be safe)
+        PUSH    B
+        MOV     C,A             ; C = low nibble
+        LDA     SHPACC
+        ORA     C               ; combine
+        STAX    D               ; store to SRCHBUF
+        INX     D               ; advance dest
+        POP     B
+        POP     H
+        ; Increment byte count (in memory to be safe)
+        PUSH    PSW
+        LDA     SHPCNT
+        INR     A
+        STA     SHPCNT
+        POP     PSW
+        ; Reset high nibble flag
+        XRA     A
+        STA     SHPHI
+        STA     SHPACC
+        JMP     SHPLP
+
+SHPSPC: ; Space: if we have a pending high nibble, treat as
+        ; a single-digit byte (e.g., "F " -> 0Fh)
+        PUSH    H
+        PUSH    B
+        LDA     SHPHI
+        ORA     A
+        JZ      SHPSP2          ; no pending nibble
+        ; Store high nibble as full byte (high already shifted)
+        LDA     SHPACC
+        ; Actually the high nibble is in upper 4 bits but
+        ; for single digit "F " we want 0F, so shift right 4
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        STAX    D
+        INX     D
+        LDA     SHPCNT
+        INR     A
+        STA     SHPCNT
+        XRA     A
+        STA     SHPHI
+        STA     SHPACC
+SHPSP2: POP     B
+        POP     H
+        JMP     SHPLP
+
+SHPFIN: ; End of input: check for pending nibble
+        LDA     SHPHI
+        ORA     A
+        JZ      SHPDON
+        ; Pending single nibble
+        LDA     SHPACC
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        STAX    D
+        LDA     SHPCNT
+        INR     A
+        STA     SHPCNT
+
+SHPDON: LDA     SHPCNT
+        STA     SRCHLEN
+        RET
+
+;------------------------------------------------------------
+; SHPCHR - Convert hex ASCII char in A to nibble value.
+; Entry:  A = character
+; Exit:   A = nibble value (0-15), CY clear.
+;         CY set if not a valid hex char.
+;------------------------------------------------------------
+SHPCHR:
+        CPI     '0'
+        JC      SHPINV          ; < '0'
+        CPI     '9'+1
+        JC      SHPD09          ; '0'-'9'
+        CPI     'A'
+        JC      SHPINV          ; ':'- '@'
+        CPI     'F'+1
+        JC      SHPDAF          ; 'A'-'F'
+        CPI     'a'
+        JC      SHPINV
+        CPI     'f'+1
+        JNC     SHPINV          ; > 'f'
+        ; 'a'-'f'
+        SUI     'a'-10
+        ORA     A               ; clear carry
+        RET
+SHPD09: SUI     '0'
+        ORA     A               ; clear carry
+        RET
+SHPDAF: SUI     'A'-10
+        ORA     A               ; clear carry
+        RET
+SHPINV: STC                     ; set carry = invalid
+        RET
+
+;=============================================================
+; DATA SEGMENT
+;=============================================================
+        DSEG
+
+; Search pattern buffer (raw bytes)
+SRCHBUF: DS     SRCHMAX         ; 64 bytes
+
+; Search pattern length (byte count)
+SRCHLEN: DB     0
+
+; Search type (0=hex, 1=ASCII)
+SRCHTYP: DB     0
+
+; Input buffer for prompts
+SRINBUF: DB     78              ; max length
+         DB     0               ; actual length
+         DS     80              ; input chars
+
+; Search state
+SRSTART: DW     0               ; start offset for this search
+SRTXEND: DW     0               ; cached text end
+SRPOS:   DW     0               ; current probe position
+SRWRAP:  DB     0               ; 1 = wrapped around
+SRTPOS:  DW     0               ; probe position for SRTRY
+SRTBYT:  DB     0               ; byte read during SRTRY
+SRFOFF:  DW     0               ; offset of last match (for display)
+
+; Hex parser state
+SHPHI:   DB     0               ; high nibble flag
+SHPACC:  DB     0               ; nibble accumulator
+SHPCNT:  DB     0               ; byte count during parse
+
+; Status messages
+SRTYPMT: DB     'Search (H)ex or (A)SCII? $'
+SRHXPMT: DB     'Hex bytes: $'
+SRASPMT: DB     'ASCII text: $'
+SRFMSG:  DB     'Found.$'
+SRNFMS:  DB     'Not found.$'
+
+        END
+

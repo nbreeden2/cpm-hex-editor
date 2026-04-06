@@ -1,0 +1,848 @@
+;============================================================
+; FILE:    HEXMENU.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   ESC menu overlay. Draws a bordered menu box in the
+;   centre of the screen, navigates with arrow keys,
+;   and dispatches the selected item action on Enter.
+;   Menu is dismissed without action on ESC or 'Q'.
+;
+;   Menu items (8 total):
+;     1. Open File
+;     2. Save File
+;     3. Save As...
+;     4. Find (hex/ASCII)...
+;     5. Go To Offset...
+;     6. Help
+;     7. About
+;     8. Exit
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.0  1984-01-01  Initial release
+;============================================================
+
+;============================================================
+; FILE:    HEDIT.INC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Shared equates for all HEDIT modules.
+;   INCLUDE this as the first statement of every .MAC file.
+;------------------------------------------------------------
+
+;--- CP/M system addresses ----------------------------
+BDOS    EQU     0005H       ; BDOS call entry
+WBOOT   EQU     0000H       ; warm boot / exit
+DFTFCB  EQU     005CH       ; default FCB (arg 1)
+CMDTAIL EQU     0080H       ; command tail buffer
+
+;--- BDOS function numbers ----------------------------
+BF_CONIN  EQU   1           ; console input (wait)
+BF_CONOUT EQU   2           ; console output: E=char
+BF_RAWIO  EQU   6           ; direct I/O: E=FFH->in
+BF_PRTSTR EQU   9           ; print $-string: DE=addr
+BF_RDLINE EQU   10          ; buffered line input
+BF_CONST  EQU   11          ; console status
+BF_FOPEN  EQU   15          ; open file: DE=FCB
+BF_FCLOSE EQU   16          ; close file: DE=FCB
+BF_FDEL   EQU   19          ; delete: DE=FCB
+BF_FREAD  EQU   20          ; seq read: DE=FCB
+BF_FWRITE EQU   21          ; seq write: DE=FCB
+BF_FMAKE  EQU   22          ; create: DE=FCB
+BF_SETDMA EQU   26          ; set DMA: DE=addr
+BF_USRNUM EQU   32          ; get/set user: E=num
+BF_CURDSK EQU   25          ; get current disk
+
+;--- FCB field offsets --------------------------------
+FCB_DR  EQU     0           ; drive (0=default, 1=A, etc.)
+FCB_F1  EQU     1           ; filename (8 bytes)
+FCB_T1  EQU     9           ; extension (3 bytes)
+FCB_EX  EQU     12          ; extent number
+FCB_RC  EQU     15          ; record count
+FCB_CR  EQU     32          ; current record
+
+;--- ASCII control codes ------------------------------
+NUL     EQU     00H
+BEL     EQU     07H         ; bell
+BS      EQU     08H         ; backspace
+TAB     EQU     09H         ; horizontal tab
+LF      EQU     0AH         ; line feed
+CR      EQU     0DH         ; carriage return
+ESC     EQU     1BH         ; escape
+DEL     EQU     7FH         ; delete character
+CPMEOF  EQU     1AH         ; CP/M EOF marker (Ctrl-Z)
+CTRLK   EQU     0BH         ; Ctrl-K (prefix key)
+CTRLQ   EQU     11H         ; Ctrl-Q (prefix key)
+
+;--- Screen layout ------------------------------------
+SCRROWS EQU     24          ; terminal row count
+SCRCOLS EQU     80          ; terminal column count
+EDITROW EQU     20          ; hex data rows (rows 3-22)
+EDITFR  EQU     3           ; first edit row (1-based)
+INFOROW EQU     1           ; info bar row
+HDRROW  EQU     2           ; column header row
+SEPRROW EQU     23          ; separator (===) row
+STATROW EQU     24          ; status/message row
+
+;--- Hex display layout -------------------------------
+BYTESROW EQU    16          ; bytes per display row
+BYTESPG EQU     320         ; bytes per page (EDITROW*BYTESROW)
+HEXFCOL EQU     7           ; first hex column (1-based)
+ASCFCOL EQU     58          ; first ASCII column (1-based)
+GRPSEP  EQU     31          ; column of group separator space
+ADDRWID EQU     6           ; width of "XXXX: " address field
+
+;--- Hex input modes ----------------------------------
+MODE_HEX EQU   0           ; editing in hex field
+MODE_ASC EQU   1           ; editing in ASCII field
+MODE_OVR EQU   0           ; overwrite mode
+MODE_INS EQU   1           ; insert mode
+
+;--- SGR attribute byte values ------------------------
+ATTR_NRM EQU    00H         ; normal
+ATTR_BLD EQU    01H         ; bold
+ATTR_DIM EQU    02H         ; dim
+ATTR_REV EQU    07H         ; reverse video
+ATTR_CYN EQU    36H         ; cyan foreground
+ATTR_GRN EQU    32H         ; green foreground
+ATTR_YEL EQU    33H         ; yellow foreground
+ATTR_MAG EQU    35H         ; magenta foreground
+ATTR_RED EQU    31H         ; red foreground
+ATTR_BLU EQU    34H         ; blue foreground
+
+;--- Buffer descriptor field offsets ------------------
+BD_BSTAR EQU    0           ; 2: buffer base address
+BD_BSIZE EQU    2           ; 2: capacity in bytes
+BD_GAPBG EQU    4           ; 2: gap start offset
+BD_GAPEN EQU    6           ; 2: gap end offset
+BD_TXEND EQU    8           ; 2: logical data length
+BD_TOPOFF EQU   10          ; 2: top visible byte offset
+BD_CSOFF EQU    12          ; 2: cursor byte offset
+BD_MRKBG EQU    14          ; 2: block mark start (FFFF=unset)
+BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
+BD_MODIF EQU    18          ; 1: modified flag
+BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
+BD_FNAME EQU    20          ; 12: drive + filename + ext
+BD_SIZE  EQU    32          ; total descriptor size
+
+;--- File format codes --------------------------------
+FMT_BIN EQU     0           ; raw binary
+FMT_IHEX EQU    1           ; Intel HEX
+
+;--- Key types (from GETKEY) --------------------------
+KT_NONE EQU     0           ; no key
+KT_ACT  EQU     1           ; action code
+KT_CHAR EQU     2           ; printable character
+
+;--- Action codes -------------------------------------
+ACT_NONE  EQU   0
+ACT_CURUP EQU   1           ; cursor up (16 bytes)
+ACT_CURDN EQU   2           ; cursor down (16 bytes)
+ACT_CURLT EQU   3           ; cursor left (1 byte)
+ACT_CURRT EQU   4           ; cursor right (1 byte)
+ACT_PGUP  EQU   5           ; page up (320 bytes)
+ACT_PGDN  EQU   6           ; page down (320 bytes)
+ACT_HOME  EQU   7           ; start of row
+ACT_END   EQU   8           ; end of row
+ACT_FTOP  EQU   9           ; top of file
+ACT_FEND  EQU   10          ; end of file
+ACT_DELLF EQU   11          ; delete left (backspace)
+ACT_DELRT EQU   12          ; delete right
+ACT_TOGIN EQU   13          ; toggle ins/ovr
+ACT_TOGMD EQU   14          ; toggle hex/ascii mode
+ACT_FNDNX EQU   15          ; find next
+ACT_FSAVE EQU   16          ; save file
+ACT_FEXIT EQU   17          ; exit
+ACT_BLKMK EQU   18          ; block mark
+ACT_BLKCP EQU   19          ; block copy
+ACT_BLKDL EQU   20          ; block delete
+ACT_BLKPS EQU   21          ; block paste
+ACT_MENU  EQU   22          ; open ESC menu
+ACT_DELRW EQU   23          ; delete row (16 bytes)
+ACT_MAX   EQU   23          ; highest action code
+
+;--- Miscellaneous ------------------------------------
+MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
+CLIPMAX EQU     2048        ; clipboard buffer size
+SRCHMAX EQU     64          ; max search pattern length
+RECSIZ  EQU     128         ; CP/M record size
+MAXADDR EQU     0FFFFH      ; max displayable address
+
+
+;--- Imports ----------------------------------------------
+        EXTRN   GETKEY          ; read next key
+        EXTRN   CURBDP          ; current buffer descriptor ptr
+        EXTRN   DIRTY           ; screen redraw flag
+        EXTRN   INSMODE         ; insert/overwrite mode
+        EXTRN   EDITMODE        ; hex/ascii edit mode
+        EXTRN   FIOPEN          ; open file
+        EXTRN   FISAVE          ; save file
+        EXTRN   FIPROMPT        ; prompt for filename
+        EXTRN   FISAVFN         ; copy work FCB to BD_FNAME
+        EXTRN   FISMOD          ; file modified flag check
+        EXTRN   STATMSG         ; status bar message
+        EXTRN   STATCLR         ; clear status bar
+        EXTRN   OUTSTR          ; write $-string
+        EXTRN   OUTCHAR         ; write single char
+        EXTRN   CURGOTO         ; position cursor (B=row,C=col)
+        EXTRN   INFOBAR         ; redraw info bar
+        EXTRN   GBMVTO          ; move cursor to offset HL
+        EXTRN   GBTXEND         ; get text end -> HL
+        EXTRN   GBCSOFF         ; get cursor offset -> HL
+        EXTRN   SRFIND          ; find (hex/ASCII prompt)
+        EXTRN   HLPSHOW         ; help screen
+        EXTRN   DOEXIT          ; exit handler
+
+;--- Exports ----------------------------------------------
+        PUBLIC  MNUSHOW         ; show menu and process
+
+;--- Menu geometry ----------------------------------------
+; Box occupies rows MNUROW1..MNUROW2, cols MNUCOL1..MNUCOL2
+MNUROW1 EQU     6               ; top border row (1-based)
+MNUROW2 EQU     18              ; bottom border row
+MNUCOL1 EQU     25              ; left border col
+MNUCOL2 EQU     54              ; right border col
+MNUITMS EQU     8               ; number of menu items
+MNUFROW EQU     MNUROW1+2       ; first item row
+MNUTCOL EQU     MNUCOL1+2       ; text start column
+
+;=============================================================
+; MNUSHOW - Display menu, handle navigation, dispatch action.
+; Entry:  (none)
+; Exit:   Selected action performed or cancelled.
+;         Screen dirty flag set.
+;         Regs: all clobbered.
+;=============================================================
+        CSEG
+
+MNUSHOW:
+        ; Draw the menu box
+        CALL    MNUDRAW
+
+        ; Initialise selection to first item
+        MVI     A,0
+        STA     MNUSEL
+
+MNULP:
+        ; Highlight current selection
+        CALL    MNUHIL
+
+        ; Read a key via unified decoder
+        CALL    GETKEY          ; B=type, C=code/char
+        MOV     A,B
+        ORA     A
+        JZ      MNULP           ; KT_NONE, try again
+
+        CPI     KT_ACT
+        JZ      MNUACD          ; action code -> check actions
+
+        ; KT_CHAR: check printable characters
+        MOV     A,C
+        CPI     CR
+        JZ      MNUACT          ; Enter = select
+        CPI     'K'
+        JZ      MNUUP
+        CPI     'k'
+        JZ      MNUUP
+        CPI     'J'
+        JZ      MNUDN
+        CPI     'j'
+        JZ      MNUDN
+
+        ; Digit shortcut 1-8
+        CPI     '1'
+        JC      MNULP           ; below '1', ignore
+        CPI     '8'+1
+        JNC     MNULP           ; above '8', ignore
+        SUI     '1'             ; 0-based index
+        STA     MNUSEL
+        JMP     MNUACT
+
+MNUACD: ; Action code in C
+        MOV     A,C
+        CPI     ACT_CURUP
+        JZ      MNUUP
+        CPI     ACT_CURDN
+        JZ      MNUDN
+        CPI     ACT_MENU
+        JZ      MNUCNC          ; ESC = cancel
+        JMP     MNULP           ; ignore other actions
+
+MNUUP:  LDA     MNUSEL
+        ORA     A
+        JZ      MNULP           ; already at top
+        DCR     A
+        STA     MNUSEL
+        JMP     MNULP
+
+MNUDN:  LDA     MNUSEL
+        CPI     MNUITMS-1
+        JZ      MNULP           ; already at bottom
+        INR     A
+        STA     MNUSEL
+        JMP     MNULP
+
+MNUCNC: ; Cancel: restore screen
+        JMP     MNUCLR
+
+MNUACT: ; Dispatch selected item
+        CALL    MNUCLR          ; remove menu overlay
+
+        LDA     MNUSEL          ; 0-based index
+        MOV     L,A
+        MVI     H,0
+        DAD     H               ; *2 for word table
+        LXI     D,MNUTBL
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M             ; DE = handler address
+        XCHG
+        PCHL                    ; jump to handler
+
+;=============================================================
+; Menu item handlers
+;=============================================================
+
+;--- 1. Open File -----------------------------------------
+MNOPEN:
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,OPNPMT
+        CALL    OUTSTR
+        LXI     D,MNUIBUF
+        MVI     C,BF_RDLINE
+        CALL    BDOS
+        LDA     MNUIBUF+1       ; length
+        ORA     A
+        JZ      MNODNE          ; cancelled
+        CALL    FIOPEN
+        MVI     A,1
+        STA     DIRTY
+MNODNE: RET
+
+;--- 2. Save File -----------------------------------------
+MNSAVE:
+        CALL    FISAVE
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 3. Save As -------------------------------------------
+MNSVAS:
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,SVAPMT
+        CALL    OUTSTR
+        LXI     D,MNUIBUF
+        MVI     C,BF_RDLINE
+        CALL    BDOS
+        LDA     MNUIBUF+1       ; length
+        ORA     A
+        JZ      MNSADN          ; cancelled
+        CALL    FISAVFN         ; copy new name to BD_FNAME
+        ; Force modified so FISAVE always writes
+        LHLD    CURBDP
+        MOV     A,L
+        ADI     BD_MODIF
+        MOV     L,A
+        MOV     A,H
+        ACI     0
+        MOV     H,A
+        MVI     M,1             ; BD_MODIF = 1
+        CALL    FISAVE
+MNSADN: MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 4. Find (hex/ASCII) ----------------------------------
+MNFIND:
+        CALL    SRFIND
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 5. Go To Offset --------------------------------------
+MNGOTO:
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,GTOPMT
+        CALL    OUTSTR
+        ; Read hex offset from user
+        CALL    RDHEX4          ; HL = 16-bit address, CY=cancelled
+        JC      MNGDNE          ; cancelled
+        ; Clamp to TXEND
+        PUSH    H               ; save target
+        CALL    GBTXEND         ; HL = text end
+        XCHG                    ; DE = TXEND
+        POP     H               ; HL = target
+        ; Compare HL with DE (target with TXEND)
+        MOV     A,H
+        CMP     D
+        JC      MNGOK           ; target.H < TXEND.H: ok
+        JNZ     MNGCLM          ; target.H > TXEND.H: clamp
+        MOV     A,L
+        CMP     E
+        JC      MNGOK           ; target < TXEND: ok
+MNGCLM: ; Clamp: target = TXEND-1 (or 0 if empty)
+        MOV     A,D
+        ORA     E
+        JZ      MNGOK           ; TXEND=0, target=0
+        XCHG                    ; HL = TXEND
+        DCX     H               ; HL = TXEND-1
+MNGOK:  CALL    GBMVTO          ; move cursor to HL
+        MVI     A,1
+        STA     DIRTY
+MNGDNE: RET
+
+;--- 6. Help ----------------------------------------------
+MNHELP:
+        CALL    HLPSHOW
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 7. About ---------------------------------------------
+MNABUT:
+        LXI     D,ABTMSG
+        CALL    STATMSG
+        ; Drain buffered input then wait for fresh key
+MNADRN: MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JNZ     MNADRN
+MNAKEY: MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JZ      MNAKEY
+        RET
+
+;--- 8. Exit ----------------------------------------------
+MNQUIT:
+        JMP     DOEXIT
+
+;=============================================================
+; RDHEX4 - Read up to 4 hex chars from user, return 16-bit
+;          value in HL.
+; Entry:  Cursor positioned for input.
+; Exit:   HL = parsed value, CY clear.
+;         CY set if ESC pressed (cancelled).
+;         Regs: all clobbered.
+;=============================================================
+RDHEX4:
+        LXI     H,0
+        SHLD    RDHVAL          ; accumulator = 0
+        MVI     A,0
+        STA     RDHCNT          ; digit count = 0
+
+RDHLP:  ; Read one key (blocking)
+        MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JZ      RDHLP           ; no char, poll again
+
+        ; Check ESC -> cancel
+        CPI     ESC
+        JZ      RDHESC
+
+        ; Check Enter -> done
+        CPI     CR
+        JZ      RDHDNE
+
+        ; Check backspace
+        CPI     BS
+        JZ      RDHBS
+        CPI     DEL
+        JZ      RDHBS
+
+        ; Check if valid hex digit
+        CPI     '0'
+        JC      RDHLP           ; < '0', ignore
+        CPI     '9'+1
+        JC      RDHDIG          ; '0'-'9'
+        CPI     'A'
+        JC      RDHLP           ; between '9' and 'A', ignore
+        CPI     'F'+1
+        JC      RDHUPR          ; 'A'-'F'
+        CPI     'a'
+        JC      RDHLP           ; ignore
+        CPI     'f'+1
+        JNC     RDHLP           ; > 'f', ignore
+        ; 'a'-'f': convert to upper
+        SUI     20H
+
+RDHUPR: ; A = 'A'-'F', convert to value 10-15
+        SUI     'A'-10
+        JMP     RDHVAL2
+
+RDHDIG: ; A = '0'-'9', convert to value 0-9
+        SUI     '0'
+
+RDHVAL2:
+        ; Check digit count < 4
+        PUSH    PSW             ; save digit value
+        LDA     RDHCNT
+        CPI     4
+        JNC     RDHFUL          ; already 4 digits
+        INR     A
+        STA     RDHCNT
+        POP     PSW             ; restore digit value
+
+        ; Shift accumulator left 4 bits, add new digit
+        ; RDHVAL = RDHVAL << 4 | digit
+        STA     RDHDIG          ; save digit
+        LHLD    RDHVAL
+        DAD     H               ; *2
+        DAD     H               ; *4
+        DAD     H               ; *8
+        DAD     H               ; *16
+        LDA     RDHDIG
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        SHLD    RDHVAL
+
+        ; Echo the digit character
+        LDA     RDHDIG
+        CPI     10
+        JC      RDHEC0
+        ADI     'A'-10
+        JMP     RDHECO
+RDHEC0: ADI     '0'
+RDHECO: MOV     E,A
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        JMP     RDHLP
+
+RDHFUL: POP     PSW             ; discard digit value
+        JMP     RDHLP           ; ignore extra digits
+
+RDHBS:  ; Backspace: remove last digit
+        LDA     RDHCNT
+        ORA     A
+        JZ      RDHLP           ; nothing to erase
+        DCR     A
+        STA     RDHCNT
+        ; Shift accumulator right 4 bits
+        LHLD    RDHVAL
+        ; HL >> 4: shift right by 4
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        MOV     B,A             ; B = H >> 4
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0F0H
+        MOV     C,A             ; C = (H & 0F) << 4
+        MOV     A,L
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        ORA     C
+        MOV     L,A             ; L = ((H & 0F) << 4) | (L >> 4)
+        MOV     H,B             ; H = H >> 4
+        SHLD    RDHVAL
+        ; Erase character on screen: BS, space, BS
+        MVI     E,BS
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        MVI     E,' '
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        MVI     E,BS
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        JMP     RDHLP
+
+RDHESC: ; Cancel
+        STC                     ; set carry = cancelled
+        RET
+
+RDHDNE: ; Done, return value in HL
+        LHLD    RDHVAL
+        ORA     A               ; clear carry
+        RET
+
+;=============================================================
+; MNUDRAW - Draw the menu box and all items.
+;=============================================================
+MNUDRAW:
+        ; Top border line
+        MVI     B,MNUROW1
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUTOP
+        CALL    OUTSTR
+
+        ; Title row
+        MVI     B,MNUROW1+1
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUTIT
+        CALL    OUTSTR
+
+        ; Title separator
+        MVI     B,MNUROW1+1
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUTIT
+        CALL    OUTSTR
+
+        ; Separator under title
+        MVI     B,MNUFROW-1
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUSEP
+        CALL    OUTSTR
+
+        ; Draw each item row
+        XRA     A
+        STA     MNUIDX          ; item index = 0
+MNUDRW:
+        LDA     MNUIDX
+        CPI     MNUITMS
+        JZ      MNUDRB          ; done items
+
+        ; Row for item: MNUFROW + index
+        ADI     MNUFROW
+        MOV     B,A
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+
+        ; Left border
+        LXI     D,MNULFT
+        CALL    OUTSTR
+
+        ; Item text: index into MNUTXP table
+        LDA     MNUIDX
+        MOV     L,A
+        MVI     H,0
+        DAD     H               ; *2
+        LXI     D,MNUTXP
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M             ; DE = item text
+        CALL    OUTSTR
+
+        ; Right border
+        LXI     D,MNURGT
+        CALL    OUTSTR
+
+        LDA     MNUIDX
+        INR     A
+        STA     MNUIDX
+        JMP     MNUDRW
+
+MNUDRB:
+        ; Bottom border
+        LDA     MNUIDX
+        ADI     MNUFROW
+        MOV     B,A
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUBOT
+        JMP     OUTSTR
+
+;=============================================================
+; MNUHIL - Highlight the currently selected item.
+; Redraws all items in normal/reverse video as appropriate.
+;=============================================================
+MNUHIL:
+        MVI     A,0
+        STA     MNUIDX          ; current item = 0
+MNUHLP:
+        LDA     MNUIDX
+        CPI     MNUITMS
+        RZ
+
+        ; Compute row
+        ADI     MNUFROW
+        MOV     B,A
+
+        ; Position at text column
+        MVI     C,MNUTCOL
+        CALL    CURGOTO
+
+        ; Set attribute: reverse if selected, normal otherwise
+        LDA     MNUIDX
+        MOV     B,A             ; B = current item
+        LDA     MNUSEL
+        CMP     B               ; selected == current?
+        JNZ     MNUHNR          ; not selected
+        LXI     D,ATTRREV
+        CALL    OUTSTR
+        JMP     MNUHTS
+
+MNUHNR: LXI     D,ATTRNRM
+        CALL    OUTSTR
+
+MNUHTS:
+        ; Print item text
+        LDA     MNUIDX
+        MOV     L,A
+        MVI     H,0
+        DAD     H
+        LXI     D,MNUTXP
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        CALL    OUTSTR
+
+        ; Reset attribute
+        LXI     D,ATTRNRM
+        CALL    OUTSTR
+
+        LDA     MNUIDX
+        INR     A
+        STA     MNUIDX
+        JMP     MNUHLP
+
+;=============================================================
+; MNUCLR - Clear the menu area (restore edit screen).
+; Redraws each row occupied by the menu with spaces.
+;=============================================================
+MNUCLR:
+        MVI     A,MNUROW1
+        STA     MNUIDX          ; row counter
+
+MNUCLP:
+        LDA     MNUIDX
+        CPI     MNUROW2+1
+        JZ      MNUCDN
+
+        MOV     B,A
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+
+        ; Emit MNUCOL2-MNUCOL1+1 spaces
+        MVI     B,MNUCOL2-MNUCOL1+1
+MNUCSP: MVI     A,' '
+        PUSH    B               ; save space counter
+        CALL    OUTCHAR
+        POP     B
+        DCR     B
+        JNZ     MNUCSP
+
+        LDA     MNUIDX
+        INR     A
+        STA     MNUIDX
+        JMP     MNUCLP
+
+MNUCDN: ; Set DIRTY so main loop redraws edit area
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;=============================================================
+; String constants (CSEG)
+;=============================================================
+
+; VT100 SGR: reverse video on / off
+ATTRREV: DB     ESC,'[7m$'
+ATTRNRM: DB     ESC,'[0m$'
+
+; Menu box borders ($ terminated)
+; Width = 30 chars (MNUCOL2-MNUCOL1+1)
+MNUTOP: DB      '+','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','+','$'
+
+MNUTIT: DB      '|','     HEDIT  MENU          ','|','$'
+
+MNUSEP: DB      '+','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','+','$'
+
+MNULFT: DB      '|',' ','$'
+MNURGT: DB      ' ','|','$'
+
+MNUBOT: DB      '+','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','+','$'
+
+; Item text strings (padded to 26 chars for uniform highlight)
+MNTX1:  DB      '1. Open File              $'
+MNTX2:  DB      '2. Save File              $'
+MNTX3:  DB      '3. Save As...             $'
+MNTX4:  DB      '4. Find (hex/ASCII)...    $'
+MNTX5:  DB      '5. Go To Offset...        $'
+MNTX6:  DB      '6. Help                   $'
+MNTX7:  DB      '7. About                  $'
+MNTX8:  DB      '8. Exit                   $'
+
+; Prompt strings
+OPNPMT: DB      'Open file: $'
+SVAPMT: DB      'Save as: $'
+GTOPMT: DB      'Go to offset (hex): $'
+ABTMSG: DB      'HEDIT v1.0 CP/M Hex Editor  (any key)$'
+
+; Dispatch table (CSEG): order matches MNUITMS
+MNUTBL:
+        DW      MNOPEN          ; 0 Open File
+        DW      MNSAVE          ; 1 Save File
+        DW      MNSVAS          ; 2 Save As
+        DW      MNFIND          ; 3 Find
+        DW      MNGOTO          ; 4 Go To Offset
+        DW      MNHELP          ; 5 Help
+        DW      MNABUT          ; 6 About
+        DW      MNQUIT          ; 7 Exit
+
+; Item text pointer table (CSEG)
+MNUTXP:
+        DW      MNTX1
+        DW      MNTX2
+        DW      MNTX3
+        DW      MNTX4
+        DW      MNTX5
+        DW      MNTX6
+        DW      MNTX7
+        DW      MNTX8
+
+;=============================================================
+; DATA SEGMENT
+;=============================================================
+        DSEG
+
+MNUSEL: DB      0               ; current selection (0-based)
+MNUIDX: DB      0               ; loop index
+
+; Menu input buffer (shared by Open, Save As, Go To)
+MNUIBUF: DB     16              ; max length
+         DB     0               ; actual length
+         DS     18              ; input chars + margin
+
+; MNUINP alias (general input work area)
+MNUINP: DS      16
+
+; RDHEX4 working variables
+RDHVAL: DW      0               ; hex accumulator
+RDHCNT: DB      0               ; digit count
+RDHDIG: DB      0               ; current digit value
+
+        END
+

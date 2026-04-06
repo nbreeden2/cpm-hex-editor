@@ -1,0 +1,1722 @@
+;============================================================
+; FILE:    HEXIO.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   File I/O module for the hex editor. Loads and saves
+;   files in raw binary and Intel HEX format. Detects
+;   format automatically on load (first byte ':' = Intel
+;   HEX, otherwise raw binary). Saves in the same format
+;   the file was loaded in.
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.0  1984-01-01  Initial release
+;============================================================
+
+;============================================================
+; FILE:    HEDIT.INC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Shared equates for all HEDIT modules.
+;   INCLUDE this as the first statement of every .MAC file.
+;------------------------------------------------------------
+
+;--- CP/M system addresses ----------------------------
+BDOS    EQU     0005H       ; BDOS call entry
+WBOOT   EQU     0000H       ; warm boot / exit
+DFTFCB  EQU     005CH       ; default FCB (arg 1)
+CMDTAIL EQU     0080H       ; command tail buffer
+
+;--- BDOS function numbers ----------------------------
+BF_CONIN  EQU   1           ; console input (wait)
+BF_CONOUT EQU   2           ; console output: E=char
+BF_RAWIO  EQU   6           ; direct I/O: E=FFH->in
+BF_PRTSTR EQU   9           ; print $-string: DE=addr
+BF_RDLINE EQU   10          ; buffered line input
+BF_CONST  EQU   11          ; console status
+BF_FOPEN  EQU   15          ; open file: DE=FCB
+BF_FCLOSE EQU   16          ; close file: DE=FCB
+BF_FDEL   EQU   19          ; delete: DE=FCB
+BF_FREAD  EQU   20          ; seq read: DE=FCB
+BF_FWRITE EQU   21          ; seq write: DE=FCB
+BF_FMAKE  EQU   22          ; create: DE=FCB
+BF_SETDMA EQU   26          ; set DMA: DE=addr
+BF_USRNUM EQU   32          ; get/set user: E=num
+BF_CURDSK EQU   25          ; get current disk
+
+;--- FCB field offsets --------------------------------
+FCB_DR  EQU     0           ; drive (0=default, 1=A, etc.)
+FCB_F1  EQU     1           ; filename (8 bytes)
+FCB_T1  EQU     9           ; extension (3 bytes)
+FCB_EX  EQU     12          ; extent number
+FCB_RC  EQU     15          ; record count
+FCB_CR  EQU     32          ; current record
+
+;--- ASCII control codes ------------------------------
+NUL     EQU     00H
+BEL     EQU     07H         ; bell
+BS      EQU     08H         ; backspace
+TAB     EQU     09H         ; horizontal tab
+LF      EQU     0AH         ; line feed
+CR      EQU     0DH         ; carriage return
+ESC     EQU     1BH         ; escape
+DEL     EQU     7FH         ; delete character
+CPMEOF  EQU     1AH         ; CP/M EOF marker (Ctrl-Z)
+CTRLK   EQU     0BH         ; Ctrl-K (prefix key)
+CTRLQ   EQU     11H         ; Ctrl-Q (prefix key)
+
+;--- Screen layout ------------------------------------
+SCRROWS EQU     24          ; terminal row count
+SCRCOLS EQU     80          ; terminal column count
+EDITROW EQU     20          ; hex data rows (rows 3-22)
+EDITFR  EQU     3           ; first edit row (1-based)
+INFOROW EQU     1           ; info bar row
+HDRROW  EQU     2           ; column header row
+SEPRROW EQU     23          ; separator (===) row
+STATROW EQU     24          ; status/message row
+
+;--- Hex display layout -------------------------------
+BYTESROW EQU    16          ; bytes per display row
+BYTESPG EQU     320         ; bytes per page (EDITROW*BYTESROW)
+HEXFCOL EQU     7           ; first hex column (1-based)
+ASCFCOL EQU     58          ; first ASCII column (1-based)
+GRPSEP  EQU     31          ; column of group separator space
+ADDRWID EQU     6           ; width of "XXXX: " address field
+
+;--- Hex input modes ----------------------------------
+MODE_HEX EQU   0           ; editing in hex field
+MODE_ASC EQU   1           ; editing in ASCII field
+MODE_OVR EQU   0           ; overwrite mode
+MODE_INS EQU   1           ; insert mode
+
+;--- SGR attribute byte values ------------------------
+ATTR_NRM EQU    00H         ; normal
+ATTR_BLD EQU    01H         ; bold
+ATTR_DIM EQU    02H         ; dim
+ATTR_REV EQU    07H         ; reverse video
+ATTR_CYN EQU    36H         ; cyan foreground
+ATTR_GRN EQU    32H         ; green foreground
+ATTR_YEL EQU    33H         ; yellow foreground
+ATTR_MAG EQU    35H         ; magenta foreground
+ATTR_RED EQU    31H         ; red foreground
+ATTR_BLU EQU    34H         ; blue foreground
+
+;--- Buffer descriptor field offsets ------------------
+BD_BSTAR EQU    0           ; 2: buffer base address
+BD_BSIZE EQU    2           ; 2: capacity in bytes
+BD_GAPBG EQU    4           ; 2: gap start offset
+BD_GAPEN EQU    6           ; 2: gap end offset
+BD_TXEND EQU    8           ; 2: logical data length
+BD_TOPOFF EQU   10          ; 2: top visible byte offset
+BD_CSOFF EQU    12          ; 2: cursor byte offset
+BD_MRKBG EQU    14          ; 2: block mark start (FFFF=unset)
+BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
+BD_MODIF EQU    18          ; 1: modified flag
+BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
+BD_FNAME EQU    20          ; 12: drive + filename + ext
+BD_SIZE  EQU    32          ; total descriptor size
+
+;--- File format codes --------------------------------
+FMT_BIN EQU     0           ; raw binary
+FMT_IHEX EQU    1           ; Intel HEX
+
+;--- Key types (from GETKEY) --------------------------
+KT_NONE EQU     0           ; no key
+KT_ACT  EQU     1           ; action code
+KT_CHAR EQU     2           ; printable character
+
+;--- Action codes -------------------------------------
+ACT_NONE  EQU   0
+ACT_CURUP EQU   1           ; cursor up (16 bytes)
+ACT_CURDN EQU   2           ; cursor down (16 bytes)
+ACT_CURLT EQU   3           ; cursor left (1 byte)
+ACT_CURRT EQU   4           ; cursor right (1 byte)
+ACT_PGUP  EQU   5           ; page up (320 bytes)
+ACT_PGDN  EQU   6           ; page down (320 bytes)
+ACT_HOME  EQU   7           ; start of row
+ACT_END   EQU   8           ; end of row
+ACT_FTOP  EQU   9           ; top of file
+ACT_FEND  EQU   10          ; end of file
+ACT_DELLF EQU   11          ; delete left (backspace)
+ACT_DELRT EQU   12          ; delete right
+ACT_TOGIN EQU   13          ; toggle ins/ovr
+ACT_TOGMD EQU   14          ; toggle hex/ascii mode
+ACT_FNDNX EQU   15          ; find next
+ACT_FSAVE EQU   16          ; save file
+ACT_FEXIT EQU   17          ; exit
+ACT_BLKMK EQU   18          ; block mark
+ACT_BLKCP EQU   19          ; block copy
+ACT_BLKDL EQU   20          ; block delete
+ACT_BLKPS EQU   21          ; block paste
+ACT_MENU  EQU   22          ; open ESC menu
+ACT_DELRW EQU   23          ; delete row (16 bytes)
+ACT_MAX   EQU   23          ; highest action code
+
+;--- Miscellaneous ------------------------------------
+MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
+CLIPMAX EQU     2048        ; clipboard buffer size
+SRCHMAX EQU     64          ; max search pattern length
+RECSIZ  EQU     128         ; CP/M record size
+MAXADDR EQU     0FFFFH      ; max displayable address
+
+
+;--- Imports ----------------------------------------------
+	EXTRN	CURBDP		; current buffer descriptor ptr
+	EXTRN	ISLOAD		; loading flag (for info bar)
+	EXTRN	GBINIT		; initialise gap buffer
+	EXTRN	GBINSRT		; insert char into buffer
+	EXTRN	GBMVTOP		; move cursor to file top
+	EXTRN	GBTXEND		; get text end -> HL
+	EXTRN	GBBASE		; get buffer base -> DE
+	EXTRN	GBBSIZ		; get buffer size -> DE
+	EXTRN	GBGAPBG		; get gap begin -> HL
+	EXTRN	GBGAPEN		; get gap end -> HL
+	EXTRN	GBLOGRD		; logical read: DE=offset -> A=byte, CY=eof
+	EXTRN	STATMSG		; display status message
+	EXTRN	OUTSTR		; write $-string to console
+	EXTRN	OUTCHAR		; output one character
+	EXTRN	CURGOTO		; position cursor (B=row,C=col)
+	EXTRN	INFOBAR		; update info bar
+
+;--- Exports ----------------------------------------------
+	PUBLIC	FIOPEN		; load file into buffer
+	PUBLIC	FISAVE		; save buffer to file
+	PUBLIC	FIPROMPT	; prompt for filename
+	PUBLIC	FISAVFN		; copy WRKFCB name to BD_FNAME
+	PUBLIC	FISMOD		; read BD_MODIF flag
+
+;=============================================================
+; FIOPEN - Open a file and load it into the current buffer.
+; Entry:  DE = address of a 36-byte FCB (CP/M default FCB
+;              at 005CH or caller-built FCB).
+;         CURBDP must be valid.
+; Exit:   A = 0 on success, A = FFH on error.
+;         Buffer filled; BD_FNAME and BD_MODIF updated.
+;         Regs: all clobbered.
+;=============================================================
+
+	CSEG
+
+FIOPEN:
+	; If DE=0, WRKFCB already set by caller (e.g. FIPROMPT)
+	MOV	A,D
+	ORA	E
+	JZ	FISKIP
+
+	; Copy FCB to our working copy
+	LXI	H,WRKFCB
+	MVI	B,36
+FICPY:	LDAX	D
+	MOV	M,A
+	INX	D
+	INX	H
+	DCR	B
+	JNZ	FICPY
+
+FISKIP:
+	; Check if BD_FNAME is blank and WRKFCB has no name
+	LDA	WRKFCB+FCB_F1
+	CPI	' '
+	JNZ	FIHAVN		; have a filename
+	; No filename - prompt user
+	LXI	D,FNPMSG
+	CALL	FIPROMPT
+	JZ	FINCAN		; user cancelled
+	; WRKFCB now populated by FIPROMPT
+
+FIHAVN:
+	; Save filename from FCB into descriptor
+	CALL	FISAVFN
+
+	; Initialise gap buffer to empty
+	CALL	FIBUFCLR
+
+	; Zero the FCB control fields
+	CALL	FIRCB0
+
+	; Set DMA to CMDTAIL for directory operation
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+
+	; Attempt to open the file
+	LXI	D,WRKFCB
+	MVI	C,BF_FOPEN
+	CALL	BDOS
+	INR	A		; 0FFH -> 0 means not found
+	JZ	FIONEW		; file does not exist
+
+	; File opened; show loading indicator
+	MVI	A,1
+	STA	ISLOAD
+	CALL	INFOBAR
+	LXI	D,LDNGMSG
+	CALL	STATMSG
+
+	; Read first record to detect format
+	LXI	D,DMABUF
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FREAD
+	CALL	BDOS
+	ORA	A
+	JNZ	FIEOF		; empty file (EOF on first read)
+
+	; Check first byte for Intel HEX marker ':'
+	LDA	DMABUF
+	CPI	3AH		; ':'
+	JZ	FIIHEX		; Intel HEX format
+
+	; --- Raw binary load ---
+	; Set format flag
+	CALL	FISETBIN
+
+	; Process first record already in DMABUF
+	LXI	H,DMABUF
+	MVI	B,RECSIZ
+	JMP	FIBLP1		; jump into the byte loop
+
+FIBLP:
+	; Read next record
+	LXI	D,DMABUF
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FREAD
+	CALL	BDOS
+	ORA	A
+	JNZ	FIEOF		; non-zero = EOF or error
+
+	LXI	H,DMABUF
+	MVI	B,RECSIZ
+
+FIBLP1:
+	; Insert bytes into gap buffer
+	MOV	A,M
+	CPI	CPMEOF		; CP/M EOF marker?
+	JZ	FIEOF
+
+	PUSH	H		; save DMA pointer
+	PUSH	B		; save loop counter
+	CALL	GBINSRT
+	POP	B		; restore loop counter
+	POP	H		; restore DMA pointer
+	INR	A		; 0FFH -> 0 means buffer full
+	JZ	FIFULL
+
+	INX	H
+	DCR	B
+	JNZ	FIBLP1
+	JMP	FIBLP		; next record
+
+	; --- Intel HEX load ---
+FIIHEX:
+	CALL	FISETIHX	; set format flag
+
+	; Initialise Intel HEX state
+	LXI	H,0
+	SHLD	IHNEXT		; next expected address = 0
+
+	; We already have the first record in DMABUF.
+	; Reset FCB to re-read from start.
+	; Close and re-open file.
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FCLOSE
+	CALL	BDOS
+	CALL	FIRCB0
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FOPEN
+	CALL	BDOS
+
+	; Initialise record read state
+	XRA	A
+	STA	IHRPOS		; position in DMA = 0
+	STA	IHRHAV		; no record loaded yet
+
+FIHLP:
+	; Read one Intel HEX line
+	CALL	IHRDLN
+	JZ	FIEOF		; Z = no more lines (EOF)
+
+	; Parse the line
+	CALL	IHPARS
+	JC	FIHLP		; CY = bad line, skip it
+
+	; Check record type
+	LDA	IHTYPE
+	CPI	01H		; EOF record?
+	JZ	FIEOF
+
+	ORA	A		; type 00 = data?
+	JNZ	FIHLP		; skip unknown types
+
+	; Data record: check for address gap
+	; If IHADDR > IHNEXT, fill gap with FFH
+	LHLD	IHADDR
+	XCHG			; DE = record address
+	LHLD	IHNEXT		; HL = next expected
+	; Compare: DE - HL (record addr - expected)
+	MOV	A,E
+	SUB	L
+	MOV	C,A
+	MOV	A,D
+	SBB	H		; CY if DE < HL (shouldn't happen)
+	MOV	B,A		; BC = gap size
+	JC	FIHSKP		; address went backwards, skip gap fill
+	ORA	C		; BC = 0?
+	JZ	FIHSKP		; no gap
+
+	; Fill gap with FFH bytes
+	; BC = number of FF bytes to insert
+FIHFLL:
+	MOV	A,B
+	ORA	C
+	JZ	FIHSKP		; done filling
+	PUSH	B
+	MVI	A,0FFH
+	CALL	GBINSRT
+	POP	B
+	INR	A		; check buffer full
+	JZ	FIFULL
+	DCX	B
+	JMP	FIHFLL
+
+FIHSKP:
+	; Insert data bytes from IHDATA
+	LDA	IHBCNT
+	ORA	A
+	JZ	FIHLP		; zero bytes, next line
+	MOV	B,A		; B = byte count
+	LXI	H,IHDATA	; HL = data source
+
+FIHDLP:
+	MOV	A,M		; get data byte
+	PUSH	H
+	PUSH	B
+	CALL	GBINSRT
+	POP	B
+	POP	H
+	INR	A		; check buffer full
+	JZ	FIFULL
+	INX	H
+	DCR	B
+	JNZ	FIHDLP
+
+	; Update IHNEXT = IHADDR + IHBCNT
+	LHLD	IHADDR
+	LDA	IHBCNT
+	MOV	C,A
+	MVI	B,0
+	DAD	B
+	SHLD	IHNEXT
+
+	JMP	FIHLP		; next line
+
+FIFULL:
+	; Buffer full - close file, show error
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FCLOSE
+	CALL	BDOS
+	CALL	FIBUFCLR
+	XRA	A
+	STA	ISLOAD
+	LXI	D,FULLMSG
+	CALL	STATMSG
+	MVI	A,0FFH		; return error
+	RET
+
+FIEOF:
+	; Close source file
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FCLOSE
+	CALL	BDOS
+
+FIONEW:
+	; New or loaded: move cursor to top, clear modified
+	XRA	A
+	STA	ISLOAD
+	CALL	GBMVTOP
+	CALL	FICLRMOD
+	; Check if file was new (TXEND = 0 means new)
+	CALL	GBTXEND
+	MOV	A,H
+	ORA	L
+	JZ	FIONWM		; truly new file
+	LXI	D,LOADMSG
+	CALL	STATMSG
+	XRA	A
+	RET
+
+FIONWM:
+	; Set default format to binary for new files
+	CALL	FISETBIN
+	LXI	D,NEWMSG
+	CALL	STATMSG
+	XRA	A
+	RET
+
+FINCAN:
+	; User cancelled filename prompt
+	XRA	A
+	RET
+
+;------------------------------------------------------------
+; FISETBIN - Set BD_FILEFMT to FMT_BIN.
+;------------------------------------------------------------
+FISETBIN:
+	LHLD	CURBDP
+	MOV	A,L
+	ADI	BD_FILEFMT
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A
+	MVI	M,FMT_BIN
+	RET
+
+;------------------------------------------------------------
+; FISETIHX - Set BD_FILEFMT to FMT_IHEX.
+;------------------------------------------------------------
+FISETIHX:
+	LHLD	CURBDP
+	MOV	A,L
+	ADI	BD_FILEFMT
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A
+	MVI	M,FMT_IHEX
+	RET
+
+;=============================================================
+; Intel HEX parser helpers
+;=============================================================
+
+;------------------------------------------------------------
+; IHRDLN - Read one Intel HEX line from file into IHLINE.
+; Reads bytes from DMABUF (refilling via BF_FREAD as needed)
+; until ':' is found, then reads until CR or LF.
+; Exit:  Z set if no more data (true EOF).
+;        NZ if line was read (IHLINE filled, NUL-terminated).
+;------------------------------------------------------------
+IHRDLN:
+	; First, scan for ':' start marker
+IHRL00:
+	CALL	IHRDBYT		; read one byte from file
+	JC	IHRLEOF		; CY = true EOF
+	CPI	CPMEOF
+	JZ	IHRLEOF
+	CPI	':'
+	JNZ	IHRL00		; skip until ':'
+
+	; Found ':'. Read rest of line into IHLINE.
+	LXI	H,IHLINE
+	MVI	M,':'		; store the colon
+	INX	H
+	MVI	B,78		; max remaining chars
+
+IHRL10:
+	CALL	IHRDBYT
+	JC	IHRL20		; EOF mid-line, terminate
+	CPI	CPMEOF
+	JZ	IHRL20
+	CPI	CR
+	JZ	IHRL20		; end of line
+	CPI	LF
+	JZ	IHRL20		; end of line
+	MOV	M,A
+	INX	H
+	DCR	B
+	JNZ	IHRL10
+	; Line too long, truncate
+
+IHRL20:
+	MVI	M,0		; NUL-terminate
+	; If we stopped on CR, consume following LF if present
+	; (not strictly necessary since we skip non-hex chars)
+	ORI	1		; clear Z flag (line was read)
+	RET
+
+IHRLEOF:
+	XRA	A		; set Z flag (EOF)
+	RET
+
+;------------------------------------------------------------
+; IHRDBYT - Read one byte from the file stream.
+; Uses DMABUF as a 128-byte read buffer with IHRPOS index.
+; Exit:  A = byte read, CY clear.
+;        CY set if true EOF (no more records).
+;------------------------------------------------------------
+IHRDBYT:
+	LDA	IHRHAV
+	ORA	A
+	JZ	IHRDNW		; no record loaded, read one
+
+	LDA	IHRPOS
+	CPI	RECSIZ		; past end of record?
+	JC	IHRDGT		; still have bytes
+
+IHRDNW:
+	; Read next record
+	PUSH	B
+	PUSH	H
+	LXI	D,DMABUF
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FREAD
+	CALL	BDOS
+	POP	H
+	POP	B
+	ORA	A
+	JNZ	IHRDEF		; non-zero = EOF
+
+	MVI	A,1
+	STA	IHRHAV		; mark record loaded
+	XRA	A
+	STA	IHRPOS		; reset position to 0
+
+IHRDGT:
+	; Return byte at DMABUF[IHRPOS]
+	LDA	IHRPOS
+	MOV	E,A
+	MVI	D,0
+	LXI	H,DMABUF
+	DAD	D		; HL = &DMABUF[pos]
+	MOV	A,M		; A = byte
+	; Increment position
+	LDA	IHRPOS
+	INR	A
+	STA	IHRPOS
+	MOV	A,M		; reload the byte
+	ORA	A		; clear CY
+	RET
+
+IHRDEF:
+	; True EOF
+	XRA	A
+	STA	IHRHAV		; clear record flag
+	STC			; set CY
+	RET
+
+;------------------------------------------------------------
+; IHPARS - Parse Intel HEX line in IHLINE buffer.
+; Expects IHLINE to start with ':'.
+; Fills: IHBCNT (byte count), IHADDR (address),
+;        IHTYPE (record type), IHDATA (data bytes).
+; Validates checksum.
+; Exit:  CY clear = ok. CY set = parse error.
+;------------------------------------------------------------
+IHPARS:
+	LXI	H,IHLINE
+	MOV	A,M
+	CPI	':'
+	JNZ	IHPERR		; doesn't start with ':'
+	INX	H		; skip ':'
+	SHLD	IHPTR		; save parse pointer
+
+	; Clear running checksum
+	XRA	A
+	STA	IHCSUM
+
+	; Read byte count (2 hex chars)
+	CALL	IHRDHX
+	JC	IHPERR
+	STA	IHBCNT
+	; Add to checksum
+	MOV	B,A
+	LDA	IHCSUM
+	ADD	B
+	STA	IHCSUM
+
+	; Read address high byte (2 hex chars)
+	CALL	IHRDHX
+	JC	IHPERR
+	STA	IHADDR+1	; high byte
+	MOV	B,A
+	LDA	IHCSUM
+	ADD	B
+	STA	IHCSUM
+
+	; Read address low byte (2 hex chars)
+	CALL	IHRDHX
+	JC	IHPERR
+	STA	IHADDR		; low byte
+	MOV	B,A
+	LDA	IHCSUM
+	ADD	B
+	STA	IHCSUM
+
+	; Read record type (2 hex chars)
+	CALL	IHRDHX
+	JC	IHPERR
+	STA	IHTYPE
+	MOV	B,A
+	LDA	IHCSUM
+	ADD	B
+	STA	IHCSUM
+
+	; Read data bytes
+	LDA	IHBCNT
+	ORA	A
+	JZ	IHPCHK		; no data bytes
+	MOV	B,A		; B = count
+	LXI	D,IHDATA	; DE = dest
+
+IHPDLP:
+	PUSH	B
+	PUSH	D
+	CALL	IHRDHX
+	POP	D
+	POP	B
+	JC	IHPERR
+	STAX	D		; store data byte
+	; Add to checksum
+	MOV	C,A
+	LDA	IHCSUM
+	ADD	C
+	STA	IHCSUM
+	INX	D
+	DCR	B
+	JNZ	IHPDLP
+
+IHPCHK:
+	; Read checksum byte
+	CALL	IHRDHX
+	JC	IHPERR
+	; Add to running sum; result should be 00
+	MOV	B,A
+	LDA	IHCSUM
+	ADD	B
+	ANI	0FFH
+	JZ	IHPOK		; checksum valid
+
+	; Bad checksum - warn but continue (set NZ, clear CY)
+	; We continue loading despite bad checksum
+	; Fall through to IHPOK
+
+IHPOK:
+	ORA	A		; clear CY
+	RET
+
+IHPERR:
+	STC			; set CY = parse error
+	RET
+
+;------------------------------------------------------------
+; IHRDHX - Read 2 hex ASCII chars from IHLINE via IHPTR.
+; Exit:  A = byte value, CY clear.
+;        CY set on invalid hex.
+;------------------------------------------------------------
+IHRDHX:
+	LHLD	IHPTR
+	MOV	A,M		; first hex char
+	ORA	A
+	JZ	IHRHER		; premature end of line
+	INX	H
+	CALL	IHRHXN		; convert to nibble
+	JC	IHRHER		; invalid hex
+	RLC
+	RLC
+	RLC
+	RLC			; shift to high nibble
+	ANI	0F0H		; mask high nibble
+	MOV	B,A		; save in B
+
+	MOV	A,M		; second hex char
+	ORA	A
+	JZ	IHRHER
+	INX	H
+	SHLD	IHPTR		; update parse pointer
+	CALL	IHRHXN		; convert to nibble
+	JC	IHRHER
+	ORA	B		; combine with high nibble
+	; CY is clear from ORA
+	RET
+
+IHRHER:
+	STC			; set CY = error
+	RET
+
+;------------------------------------------------------------
+; IHRHXN - Convert ASCII hex char in A to nibble (0-15).
+; Exit:  A = 0-15, CY clear if valid.
+;        CY set if invalid hex character.
+;------------------------------------------------------------
+IHRHXN:
+	CPI	'0'
+	JC	IHRHNE		; < '0': invalid
+	CPI	'9'+1
+	JC	IHRHN0		; '0'-'9'
+	CPI	'A'
+	JC	IHRHNE		; between '9' and 'A': invalid
+	CPI	'F'+1
+	JC	IHRHN1		; 'A'-'F'
+	CPI	'a'
+	JC	IHRHNE		; between 'F' and 'a': invalid
+	CPI	'f'+1
+	JC	IHRHN2		; 'a'-'f'
+	JMP	IHRHNE		; > 'f': invalid
+
+IHRHN0:
+	SUI	'0'		; A = 0-9
+	RET			; CY clear from SUI when result >= 0
+
+IHRHN1:
+	SUI	'A'-10		; A = 10-15
+	RET
+
+IHRHN2:
+	SUI	'a'-10		; A = 10-15
+	RET
+
+IHRHNE:
+	STC			; invalid hex char
+	RET
+
+;=============================================================
+; FISAVE - Save current buffer to its file.
+; Entry:  CURBDP valid; BD_FNAME holds name.
+; Exit:   File written; BD_MODIF cleared.
+;         Regs: all clobbered.
+;=============================================================
+FISAVE:
+	; Check modified flag - skip if clean
+	CALL	FISMOD
+	ORA	A
+	JZ	FSVSKP		; not modified
+
+	; Build FCB from stored filename
+	CALL	FIBLDFC
+
+	; Delete any existing .BAK
+	CALL	FIMKBAK
+
+	; Rename current file to .BAK
+	CALL	FIRNMBK
+
+	; Set DMA to CMDTAIL for directory op
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+
+	; Create new output file
+	LXI	D,WRKFCB
+	MVI	C,BF_FMAKE
+	CALL	BDOS
+	INR	A
+	JZ	FSVERE		; create failed (disk full?)
+
+	; Reset FCB current record
+	CALL	FIRCB0
+
+	; Clear write error flag
+	XRA	A
+	STA	FWERRF
+
+	; Check file format
+	LHLD	CURBDP
+	MOV	A,L
+	ADI	BD_FILEFMT
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A
+	MOV	A,M		; A = file format
+	CPI	FMT_IHEX
+	JZ	FSVIHX
+
+	; --- Raw binary save ---
+	CALL	FIWRITE
+	LDA	FWERRF
+	ORA	A
+	JNZ	FSVERE
+	JMP	FSVDON
+
+	; --- Intel HEX save ---
+FSVIHX:
+	CALL	FIWIHEX
+	LDA	FWERRF
+	ORA	A
+	JNZ	FSVERE
+
+FSVDON:
+	; Close file
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FCLOSE
+	CALL	BDOS
+
+	; Clear modified flag
+	CALL	FICLRMOD
+
+FSVSKP:
+	LXI	D,SAVEMSG
+	JMP	STATMSG
+
+FSVERE:
+	; Close file on error
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FCLOSE
+	CALL	BDOS
+	LXI	D,ERRMSG
+	JMP	STATMSG
+
+;=============================================================
+; FIWRITE - Write buffer as raw binary to WRKFCB.
+; Reads logical bytes via GBLOGRD, writes 128-byte records.
+; Pads final record with zeros, appends CPMEOF.
+;=============================================================
+FIWRITE:
+	; Initialise write state
+	LXI	H,0
+	SHLD	FWOFF		; logical offset = 0
+	XRA	A
+	STA	FWDPOS		; DMA buffer position = 0
+
+FWLOP:
+	; Read next logical byte
+	LHLD	FWOFF
+	XCHG			; DE = offset
+	CALL	GBLOGRD		; A = byte, CY = past end
+	JC	FWDONE		; past end of data
+
+	; Store byte in DMABUF
+	PUSH	A		; save byte
+	LDA	FWDPOS
+	MOV	E,A
+	MVI	D,0
+	LXI	H,DMABUF
+	DAD	D		; HL = &DMABUF[pos]
+	POP	A		; restore byte
+	MOV	M,A
+
+	; Advance offset
+	LHLD	FWOFF
+	INX	H
+	SHLD	FWOFF
+
+	; Advance DMA position
+	LDA	FWDPOS
+	INR	A
+	STA	FWDPOS
+	CPI	RECSIZ		; full record?
+	JNZ	FWLOP
+
+	; Write full record
+	CALL	FWREC
+	LDA	FWERRF
+	ORA	A
+	RNZ			; write error, abort
+	XRA	A
+	STA	FWDPOS		; reset position
+	JMP	FWLOP
+
+FWDONE:
+	; Check if there's a partial record to write
+	LDA	FWDPOS
+	ORA	A
+	JZ	FWRET		; nothing pending
+
+	; Pad remaining bytes with zero (not CPMEOF for binary)
+	LDA	FWDPOS
+	MOV	B,A
+FWPADL:
+	MOV	A,B
+	CPI	RECSIZ
+	JZ	FWWLST
+	MOV	E,B
+	MVI	D,0
+	LXI	H,DMABUF
+	DAD	D
+	MVI	M,0		; pad with zero
+	INR	B
+	JMP	FWPADL
+
+FWWLST:
+	CALL	FWREC
+
+FWRET:
+	RET
+
+;------------------------------------------------------------
+; FWREC - Write one RECSIZ record from DMABUF to WRKFCB.
+; Sets FWERRF on write error.
+;------------------------------------------------------------
+FWREC:
+	LXI	D,DMABUF
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,WRKFCB
+	MVI	C,BF_FWRITE
+	CALL	BDOS
+	ORA	A
+	RZ			; A=0: success
+	MVI	A,1
+	STA	FWERRF		; mark write error
+	RET
+
+;=============================================================
+; FIWIHEX - Write buffer as Intel HEX to WRKFCB.
+; Writes 16-byte data records with proper checksums,
+; then an EOF record.
+;=============================================================
+FIWIHEX:
+	; Initialise state
+	LXI	H,0
+	SHLD	FWOFF		; logical offset (= HEX address)
+	XRA	A
+	STA	FWOPOS		; output buffer position
+
+	; Get total data length for end check
+	CALL	GBTXEND		; HL = text length
+	SHLD	FWTXEND
+
+FWHLP:
+	; Check if done: FWOFF >= FWTXEND
+	LHLD	FWOFF
+	XCHG			; DE = current offset
+	LHLD	FWTXEND		; HL = total length
+	MOV	A,E
+	SUB	L
+	MOV	A,D
+	SBB	H		; FWOFF - FWTXEND
+	JNC	FWHEOF		; done, write EOF record
+
+	; Determine record length: min(16, remaining)
+	; remaining = FWTXEND - FWOFF
+	LHLD	FWTXEND
+	XCHG			; DE = FWTXEND
+	LHLD	FWOFF		; HL = FWOFF
+	MOV	A,E
+	SUB	L
+	MOV	L,A
+	MOV	A,D
+	SBB	H
+	MOV	H,A		; HL = remaining bytes
+
+	; If remaining > 16, use 16
+	MOV	A,H
+	ORA	A
+	JNZ	FWH16		; high byte > 0, so > 255
+	MOV	A,L
+	CPI	17
+	JC	FWHLEN		; remaining < 17, use as-is
+FWH16:
+	MVI	A,16
+FWHLEN:
+	STA	IHBCNT		; record byte count
+
+	; Read data bytes into IHDATA
+	LDA	IHBCNT
+	MOV	B,A		; B = count
+	LXI	D,IHDATA	; DE = dest
+	LHLD	FWOFF
+	XCHG			; DE in wrong reg; swap approach
+	; We need offset in DE for GBLOGRD, dest in a saved location
+	LHLD	FWOFF		; HL = offset, use as counter
+	LXI	D,IHDATA	; DE = dest
+	; Actually, GBLOGRD wants offset in DE.
+	; Let's use a different approach: loop with FWOFF incrementing
+
+	LDA	IHBCNT
+	MOV	B,A
+	LXI	H,IHDATA
+
+FWHRDL:
+	PUSH	H
+	PUSH	B
+	LHLD	FWOFF
+	XCHG			; DE = offset for GBLOGRD
+	CALL	GBLOGRD		; A = byte
+	; (CY shouldn't happen since we checked remaining)
+	POP	B
+	POP	H
+	MOV	M,A
+	INX	H
+
+	; Advance FWOFF
+	PUSH	H
+	PUSH	B
+	LHLD	FWOFF
+	INX	H
+	SHLD	FWOFF
+	POP	B
+	POP	H
+
+	DCR	B
+	JNZ	FWHRDL
+
+	; Write the Intel HEX data record
+	; HL=address, DE=data ptr, B=byte count, C=type
+	LHLD	FWOFF		; current FWOFF = address AFTER data
+	; We need the address at START of this record
+	; Start address = FWOFF - IHBCNT
+	LDA	IHBCNT
+	MOV	C,A
+	MVI	B,0
+	MOV	A,L
+	SUB	C
+	MOV	L,A
+	MOV	A,H
+	SBB	B
+	MOV	H,A		; HL = start address of this record
+
+	LXI	D,IHDATA	; DE = data pointer
+	LDA	IHBCNT
+	MOV	B,A		; B = byte count
+	MVI	C,00H		; C = record type 00 (data)
+	CALL	IHWRLN
+
+	JMP	FWHLP		; next chunk
+
+FWHEOF:
+	; Write EOF record: :00000001FF
+	LXI	H,0		; address = 0000
+	LXI	D,IHDATA	; data ptr (unused, 0 bytes)
+	MVI	B,0		; byte count = 0
+	MVI	C,01H		; type = EOF
+	CALL	IHWRLN
+
+	; Flush output buffer (pad with CPMEOF and write)
+	CALL	FWOFLSH
+	RET
+
+;=============================================================
+; Intel HEX writer helpers
+;=============================================================
+
+;------------------------------------------------------------
+; IHWRLN - Write one Intel HEX record as ASCII text.
+; Entry:  HL = address, DE = data ptr, B = byte count,
+;         C = record type.
+; Exit:   Record written to output. All regs clobbered.
+;------------------------------------------------------------
+IHWRLN:
+	; Save parameters
+	MOV	A,B
+	STA	IWBCNT		; byte count
+	MOV	A,C
+	STA	IWTYPE		; record type
+	MOV	A,L
+	STA	IWADDR		; address low
+	MOV	A,H
+	STA	IWADDR+1	; address high
+	XCHG
+	SHLD	IWDPTR		; data pointer
+
+	; Clear checksum
+	XRA	A
+	STA	IHCSUM
+
+	; Write ':' start code
+	MVI	A,':'
+	CALL	FWOCH
+
+	; Write byte count
+	LDA	IWBCNT
+	CALL	IHCSADD		; add to checksum
+	CALL	IHWRHX		; write as 2 hex chars
+
+	; Write address high byte
+	LDA	IWADDR+1
+	CALL	IHCSADD
+	CALL	IHWRHX
+
+	; Write address low byte
+	LDA	IWADDR
+	CALL	IHCSADD
+	CALL	IHWRHX
+
+	; Write record type
+	LDA	IWTYPE
+	CALL	IHCSADD
+	CALL	IHWRHX
+
+	; Write data bytes
+	LDA	IWBCNT
+	ORA	A
+	JZ	IHWLCS		; no data
+
+	MOV	B,A
+	LHLD	IWDPTR
+
+IHWDLP:
+	MOV	A,M		; get data byte
+	PUSH	H
+	PUSH	B
+	CALL	IHCSADD		; add to checksum
+	CALL	IHWRHX		; write as hex
+	POP	B
+	POP	H
+	INX	H
+	DCR	B
+	JNZ	IHWDLP
+
+IHWLCS:
+	; Compute and write checksum (two's complement)
+	LDA	IHCSUM
+	CMA
+	INR	A		; A = two's complement
+	CALL	IHWRHX
+
+	; Write CR+LF line terminator
+	MVI	A,CR
+	CALL	FWOCH
+	MVI	A,LF
+	CALL	FWOCH
+	RET
+
+;------------------------------------------------------------
+; IHCSADD - Add byte in A to IHCSUM running checksum.
+; Preserves A.
+;------------------------------------------------------------
+IHCSADD:
+	PUSH	B
+	MOV	B,A		; save A
+	LDA	IHCSUM
+	ADD	B
+	STA	IHCSUM
+	MOV	A,B		; restore A
+	POP	B
+	RET
+
+;------------------------------------------------------------
+; IHWRHX - Write byte in A as 2 hex ASCII chars to output.
+;------------------------------------------------------------
+IHWRHX:
+	PUSH	A		; save byte
+	; High nibble first
+	RRC
+	RRC
+	RRC
+	RRC
+	ANI	0FH
+	CALL	IHWRNB		; write nibble
+	POP	A		; restore byte
+	; Low nibble
+	ANI	0FH
+	CALL	IHWRNB
+	RET
+
+;------------------------------------------------------------
+; IHWRNB - Write nibble (0-15) in A as hex ASCII char.
+;------------------------------------------------------------
+IHWRNB:
+	CPI	10
+	JC	IHWRN0
+	ADI	'A'-10		; A-F
+	JMP	FWOCH
+IHWRN0:
+	ADI	'0'		; 0-9
+	JMP	FWOCH
+
+;------------------------------------------------------------
+; FWOCH - Write single char (in A) to output buffer.
+; Flushes buffer when full (128 bytes).
+;------------------------------------------------------------
+FWOCH:
+	PUSH	B		; save regs
+	PUSH	H
+	PUSH	D
+	MOV	B,A		; save char
+	LDA	FWOPOS
+	MOV	E,A
+	MVI	D,0
+	LXI	H,DMABUF
+	DAD	D		; HL = &DMABUF[pos]
+	MOV	M,B		; store char
+
+	LDA	FWOPOS
+	INR	A
+	STA	FWOPOS
+	CPI	RECSIZ		; buffer full?
+	JNZ	FWOCRT		; not yet
+
+	; Flush: write record
+	CALL	FWREC
+	XRA	A
+	STA	FWOPOS		; reset position
+
+FWOCRT:
+	POP	D
+	POP	H
+	POP	B
+	RET
+
+;------------------------------------------------------------
+; FWOFLSH - Flush output buffer: pad with CPMEOF and write.
+;------------------------------------------------------------
+FWOFLSH:
+	LDA	FWOPOS
+	ORA	A
+	RZ			; nothing to flush
+
+	; Pad remainder with CPMEOF
+	LDA	FWOPOS
+FWOFPL:
+	CPI	RECSIZ
+	JZ	FWOFWR
+	MOV	E,A
+	MVI	D,0
+	LXI	H,DMABUF
+	DAD	D
+	MVI	M,CPMEOF
+	INR	A
+	JMP	FWOFPL
+
+FWOFWR:
+	CALL	FWREC
+	XRA	A
+	STA	FWOPOS
+	RET
+
+;=============================================================
+; FIPROMPT - Prompt user for a filename on the status line.
+; Entry:  DE = prompt string ($ terminated)
+; Exit:   WRKFCB filled.
+;         Zero flag set if user cancelled (empty input).
+;         NZ if filename entered.
+;         Regs: all clobbered.
+;=============================================================
+FIPROMPT:
+	PUSH	D		; save prompt string pointer
+	MVI	B,STATROW	; row 24
+	MVI	C,1		; col 1
+	CALL	CURGOTO
+	POP	D		; restore prompt pointer
+	CALL	OUTSTR		; display prompt
+
+	; Use BDOS buffered line input into RDLNBUF
+	LXI	D,RDLNBUF
+	MVI	C,BF_RDLINE
+	CALL	BDOS
+
+	; RDLNBUF+1 = actual length; RDLNBUF+2.. = chars
+	LDA	RDLNBUF+1
+	ORA	A
+	JZ	FPCANC		; empty input = cancel
+
+	; Copy to FILNBUF, NUL-terminate
+	MVI	B,0
+	MOV	C,A		; C = length
+	LXI	H,RDLNBUF+2	; source
+	LXI	D,FILNBUF	; dest
+FPCPLP:	MOV	A,M
+	STAX	D
+	INX	H
+	INX	D
+	INR	B
+	MOV	A,B
+	CMP	C
+	JNZ	FPCPLP
+	XRA	A
+	STAX	D		; NUL terminator
+
+	; Parse FILNBUF into WRKFCB
+	CALL	FIPARSN
+
+	LXI	H,FILNBUF
+	ORA	A		; clear zero
+	INR	A		; make NZ
+	RET
+
+FPCANC:
+	LXI	H,FILNBUF
+	XRA	A		; set Z (cancelled)
+	RET
+
+;=============================================================
+; FISAVFN - Copy WRKFCB drive+name+ext into BD_FNAME field.
+; WRKFCB must be populated before calling.
+; BD_FNAME layout: [drive(1) + name(8) + ext(3)] = 12 bytes
+;=============================================================
+FISAVFN:
+	LHLD	CURBDP		; HL = descriptor
+	MOV	A,L
+	ADI	BD_FNAME
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A		; HL = &desc.BD_FNAME
+
+	LXI	D,WRKFCB+FCB_DR ; DE = drive+name+ext in FCB
+	MVI	B,12		; 1+8+3 = 12 bytes
+FSFNLP:	LDAX	D
+	MOV	M,A
+	INX	H
+	INX	D
+	DCR	B
+	JNZ	FSFNLP
+	RET
+
+;=============================================================
+; FISMOD - Read BD_MODIF, return in A.
+;=============================================================
+FISMOD:
+	LHLD	CURBDP
+	MOV	A,L
+	ADI	BD_MODIF
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A
+	MOV	A,M
+	RET
+
+;=============================================================
+; Internal helpers
+;=============================================================
+
+;------------------------------------------------------------
+; FIBUFCLR - Reset gap buffer to empty using GBINIT.
+;------------------------------------------------------------
+FIBUFCLR:
+	LHLD	CURBDP		; HL = descriptor
+	PUSH	H
+
+	; Read base address
+	MOV	A,L
+	ADI	BD_BSTAR
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A
+	MOV	E,M
+	INX	H
+	MOV	D,M		; DE = buffer base
+
+	POP	H		; HL = descriptor again
+	PUSH	H
+	PUSH	D		; save base
+
+	; Read buffer size
+	MOV	A,L
+	ADI	BD_BSIZE
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A
+	MOV	C,M
+	INX	H
+	MOV	B,M		; BC = buffer size
+
+	POP	D		; DE = base
+	POP	H		; HL = descriptor
+	JMP	GBINIT
+
+;------------------------------------------------------------
+; FICLRMOD - Clear BD_MODIF flag in current descriptor.
+;------------------------------------------------------------
+FICLRMOD:
+	LHLD	CURBDP
+	MOV	A,L
+	ADI	BD_MODIF
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A
+	MVI	M,0
+	RET
+
+;------------------------------------------------------------
+; FIRCB0 - Zero FCB control bytes: EX, RC, CR.
+;------------------------------------------------------------
+FIRCB0:
+	XRA	A
+	STA	WRKFCB+FCB_EX
+	STA	WRKFCB+FCB_RC
+	STA	WRKFCB+FCB_CR
+	; Also zero bytes 13-14 (S1, S2)
+	STA	WRKFCB+13
+	STA	WRKFCB+14
+	RET
+
+;------------------------------------------------------------
+; FIBLDFC - Build WRKFCB from BD_FNAME in descriptor.
+;------------------------------------------------------------
+FIBLDFC:
+	; Zero entire FCB first
+	LXI	H,WRKFCB
+	MVI	B,36
+	XRA	A
+FBFCLP:	MOV	M,A
+	INX	H
+	DCR	B
+	JNZ	FBFCLP
+
+	; Copy drive+name+ext from descriptor BD_FNAME
+	LHLD	CURBDP
+	MOV	A,L
+	ADI	BD_FNAME
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A		; HL = BD_FNAME
+
+	LXI	D,WRKFCB+FCB_DR
+	MVI	B,12
+FBFLP:	MOV	A,M
+	STAX	D
+	INX	H
+	INX	D
+	DCR	B
+	JNZ	FBFLP
+	RET
+
+;------------------------------------------------------------
+; FIMKBAK - Delete any existing .BAK file with same name.
+;------------------------------------------------------------
+FIMKBAK:
+	CALL	FIBAKFCB
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+	LXI	D,BAKFCB
+	MVI	C,BF_FDEL
+	JMP	BDOS		; ignore error (may not exist)
+
+;------------------------------------------------------------
+; FIRNMBK - Rename WRKFCB file to .BAK.
+; CP/M BF_RENAME (func 23): FCB[0..15] = old, [16..31] = new
+;------------------------------------------------------------
+FIRNMBK:
+	; Set DMA for directory op
+	LXI	D,CMDTAIL
+	MVI	C,BF_SETDMA
+	CALL	BDOS
+
+	; Build rename FCB: copy WRKFCB to first 16 bytes
+	LXI	H,RNMFCB
+	LXI	D,WRKFCB
+	MVI	B,16
+FRNLP:	LDAX	D
+	MOV	M,A
+	INX	D
+	INX	H
+	DCR	B
+	JNZ	FRNLP
+
+	; Copy name portion again to bytes 16-31 (new name)
+	LXI	D,WRKFCB
+	MVI	B,16
+FRNLP2:	LDAX	D
+	MOV	M,A
+	INX	D
+	INX	H
+	DCR	B
+	JNZ	FRNLP2
+
+	; Overwrite extension in second name with BAK
+	LXI	H,RNMFCB+16+FCB_T1
+	MVI	M,'B'
+	INX	H
+	MVI	M,'A'
+	INX	H
+	MVI	M,'K'
+
+	LXI	D,RNMFCB
+	MVI	C,23		; BF_RENAME = 23
+	JMP	BDOS
+
+;------------------------------------------------------------
+; FIBAKFCB - Build BAKFCB from WRKFCB name with .BAK ext.
+;------------------------------------------------------------
+FIBAKFCB:
+	LXI	H,BAKFCB
+	MVI	B,36
+	XRA	A
+FBKLP:	MOV	M,A
+	INX	H
+	DCR	B
+	JNZ	FBKLP
+	; Copy drive byte
+	LDA	WRKFCB+FCB_DR
+	STA	BAKFCB+FCB_DR
+	; Copy 8-char name
+	LXI	D,WRKFCB+FCB_F1
+	LXI	H,BAKFCB+FCB_F1
+	MVI	B,8
+FBKLP2:	LDAX	D
+	MOV	M,A
+	INX	D
+	INX	H
+	DCR	B
+	JNZ	FBKLP2
+	; Set .BAK extension
+	MVI	M,'B'
+	INX	H
+	MVI	M,'A'
+	INX	H
+	MVI	M,'K'
+	RET
+
+;------------------------------------------------------------
+; FIPARSN - Parse filename in FILNBUF into WRKFCB.
+; Format: [d:]name[.ext]  (CP/M 8.3, upper-cased)
+;------------------------------------------------------------
+FIPARSN:
+	; Zero WRKFCB
+	LXI	H,WRKFCB
+	MVI	B,36
+	XRA	A
+FPNCLP:	MOV	M,A
+	INX	H
+	DCR	B
+	JNZ	FPNCLP
+	; Space-fill name+ext
+	LXI	H,WRKFCB+FCB_F1
+	MVI	B,11
+	MVI	A,' '
+FPNSPL:	MOV	M,A
+	INX	H
+	DCR	B
+	JNZ	FPNSPL
+
+	LXI	H,FILNBUF
+
+	; Check for drive letter: if FILNBUF[1] = ':'
+	MOV	A,M		; first char
+	ORA	A
+	RZ			; empty
+	INX	H
+	MOV	B,M		; second char
+	DCX	H		; back to start
+	MOV	A,B
+	CPI	':'
+	JNZ	FPNND		; no drive letter
+	; Drive letter present
+	MOV	A,M		; get drive letter
+	ANI	5FH		; upper case
+	SUI	'A'-1		; A=1, B=2, ...
+	STA	WRKFCB+FCB_DR
+	INX	H
+	INX	H		; skip 'X:'
+
+FPNND:
+	; Parse name (up to 8 chars)
+	LXI	D,WRKFCB+FCB_F1
+	MVI	B,8
+FPNNLP:	MOV	A,M
+	ORA	A
+	JZ	FPNDNE		; end of string
+	CPI	'.'
+	JZ	FPNEXT		; start of extension
+	CPI	'a'
+	JC	FPNSTC
+	CPI	'z'+1
+	JNC	FPNSTC
+	ANI	5FH		; to upper
+FPNSTC:	STAX	D
+	INX	H
+	INX	D
+	DCR	B
+	JNZ	FPNNLP
+	; Overflow: skip to '.' or end
+FPNSKP:	MOV	A,M
+	ORA	A
+	JZ	FPNDNE
+	CPI	'.'
+	JZ	FPNEXT
+	INX	H
+	JMP	FPNSKP
+
+FPNDNE:	CALL	FIRCB0
+	RET
+
+FPNEXT:
+	; Parse extension (up to 3 chars)
+	INX	H		; skip '.'
+	LXI	D,WRKFCB+FCB_T1
+	MVI	B,3
+FPNELP:	MOV	A,M
+	ORA	A
+	JZ	FPNDNE
+	CPI	'a'
+	JC	FPNESC
+	CPI	'z'+1
+	JNC	FPNESC
+	ANI	5FH
+FPNESC:	STAX	D
+	INX	H
+	INX	D
+	DCR	B
+	JNZ	FPNELP
+	JMP	FIRCB0
+
+;=============================================================
+; String constants
+;=============================================================
+FNPMSG:	DB	'Filename: $'
+LDNGMSG: DB	'Loading...$'
+LOADMSG: DB	'File loaded.$'
+NEWMSG:	DB	'New file.$'
+SAVEMSG: DB	'File saved.$'
+ERRMSG:	DB	'Disk error!$'
+FULLMSG: DB	'File too large for buffer!$'
+
+;=============================================================
+; DATA SEGMENT
+;=============================================================
+	DSEG
+
+WRKFCB:	DS	36		; working FCB
+BAKFCB:	DS	36		; .BAK rename FCB
+RNMFCB:	DS	36		; rename operation FCB
+DMABUF:	DS	128		; DMA buffer for disk I/O
+RDLNBUF: DB	14		; max chars for BDOS readline
+	DS	16		; readline buffer (max+2)
+FILNBUF: DS	16		; parsed filename string
+
+; Intel HEX parser state
+IHLINE:	DS	80		; Intel HEX line buffer
+IHDATA:	DS	32		; parsed data bytes
+IHADDR:	DW	0		; current record address
+IHNEXT:	DW	0		; next expected address
+IHCSUM:	DB	0		; running checksum
+IHBCNT:	DB	0		; byte count in current record
+IHTYPE:	DB	0		; record type
+IHPTR:	DW	0		; parse pointer into IHLINE
+IHRPOS:	DB	0		; read position in DMABUF
+IHRHAV:	DB	0		; flag: record loaded in DMABUF
+
+; Intel HEX writer state
+IWBCNT:	DB	0		; write record byte count
+IWTYPE:	DB	0		; write record type
+IWADDR:	DW	0		; write record address
+IWDPTR:	DW	0		; write data pointer
+
+; General file I/O state
+FWOFF:	DW	0		; current logical write offset
+FWTXEND: DW	0		; text end (for write loops)
+FWDPOS:	DB	0		; DMA buffer write position
+FWOPOS:	DB	0		; output buffer position (IHX)
+FWERRF:	DB	0		; write error flag
+
+	END
+

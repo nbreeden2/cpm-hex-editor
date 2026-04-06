@@ -1,0 +1,1369 @@
+;============================================================
+; FILE:    HEXGAP.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Byte-oriented gap buffer engine for HEDIT hex editor.
+;   All routines operate on the buffer identified by CURBDP
+;   (current buffer descriptor pointer).  Data is stored as
+;   raw bytes with no line structure — purely byte-oriented.
+;   The gap sits at the cursor position, allowing O(1)
+;   insert/delete there.
+;
+;   Descriptor layout (offsets from BD_xxx in HEDIT.INC):
+;     BD_BSTAR: base address of RAM buffer
+;     BD_BSIZE: total capacity in bytes
+;     BD_GAPBG: offset of first gap byte
+;     BD_GAPEN: offset of first data byte after gap
+;     BD_TXEND: number of data bytes in buffer
+;     BD_TOPOFF: top visible byte offset
+;     BD_CSOFF:  cursor byte offset
+;     BD_MRKBG: block mark start offset (FFFF=none)
+;     BD_MRKEN: block mark end offset
+;     BD_MODIF: non-zero if buffer is modified
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.0  1984-01-01  Initial release
+;============================================================
+
+;============================================================
+; FILE:    HEDIT.INC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Shared equates for all HEDIT modules.
+;   INCLUDE this as the first statement of every .MAC file.
+;------------------------------------------------------------
+
+;--- CP/M system addresses ----------------------------
+BDOS    EQU     0005H       ; BDOS call entry
+WBOOT   EQU     0000H       ; warm boot / exit
+DFTFCB  EQU     005CH       ; default FCB (arg 1)
+CMDTAIL EQU     0080H       ; command tail buffer
+
+;--- BDOS function numbers ----------------------------
+BF_CONIN  EQU   1           ; console input (wait)
+BF_CONOUT EQU   2           ; console output: E=char
+BF_RAWIO  EQU   6           ; direct I/O: E=FFH->in
+BF_PRTSTR EQU   9           ; print $-string: DE=addr
+BF_RDLINE EQU   10          ; buffered line input
+BF_CONST  EQU   11          ; console status
+BF_FOPEN  EQU   15          ; open file: DE=FCB
+BF_FCLOSE EQU   16          ; close file: DE=FCB
+BF_FDEL   EQU   19          ; delete: DE=FCB
+BF_FREAD  EQU   20          ; seq read: DE=FCB
+BF_FWRITE EQU   21          ; seq write: DE=FCB
+BF_FMAKE  EQU   22          ; create: DE=FCB
+BF_SETDMA EQU   26          ; set DMA: DE=addr
+BF_USRNUM EQU   32          ; get/set user: E=num
+BF_CURDSK EQU   25          ; get current disk
+
+;--- FCB field offsets --------------------------------
+FCB_DR  EQU     0           ; drive (0=default, 1=A, etc.)
+FCB_F1  EQU     1           ; filename (8 bytes)
+FCB_T1  EQU     9           ; extension (3 bytes)
+FCB_EX  EQU     12          ; extent number
+FCB_RC  EQU     15          ; record count
+FCB_CR  EQU     32          ; current record
+
+;--- ASCII control codes ------------------------------
+NUL     EQU     00H
+BEL     EQU     07H         ; bell
+BS      EQU     08H         ; backspace
+TAB     EQU     09H         ; horizontal tab
+LF      EQU     0AH         ; line feed
+CR      EQU     0DH         ; carriage return
+ESC     EQU     1BH         ; escape
+DEL     EQU     7FH         ; delete character
+CPMEOF  EQU     1AH         ; CP/M EOF marker (Ctrl-Z)
+CTRLK   EQU     0BH         ; Ctrl-K (prefix key)
+CTRLQ   EQU     11H         ; Ctrl-Q (prefix key)
+
+;--- Screen layout ------------------------------------
+SCRROWS EQU     24          ; terminal row count
+SCRCOLS EQU     80          ; terminal column count
+EDITROW EQU     20          ; hex data rows (rows 3-22)
+EDITFR  EQU     3           ; first edit row (1-based)
+INFOROW EQU     1           ; info bar row
+HDRROW  EQU     2           ; column header row
+SEPRROW EQU     23          ; separator (===) row
+STATROW EQU     24          ; status/message row
+
+;--- Hex display layout -------------------------------
+BYTESROW EQU    16          ; bytes per display row
+BYTESPG EQU     320         ; bytes per page (EDITROW*BYTESROW)
+HEXFCOL EQU     7           ; first hex column (1-based)
+ASCFCOL EQU     58          ; first ASCII column (1-based)
+GRPSEP  EQU     31          ; column of group separator space
+ADDRWID EQU     6           ; width of "XXXX: " address field
+
+;--- Hex input modes ----------------------------------
+MODE_HEX EQU   0           ; editing in hex field
+MODE_ASC EQU   1           ; editing in ASCII field
+MODE_OVR EQU   0           ; overwrite mode
+MODE_INS EQU   1           ; insert mode
+
+;--- SGR attribute byte values ------------------------
+ATTR_NRM EQU    00H         ; normal
+ATTR_BLD EQU    01H         ; bold
+ATTR_DIM EQU    02H         ; dim
+ATTR_REV EQU    07H         ; reverse video
+ATTR_CYN EQU    36H         ; cyan foreground
+ATTR_GRN EQU    32H         ; green foreground
+ATTR_YEL EQU    33H         ; yellow foreground
+ATTR_MAG EQU    35H         ; magenta foreground
+ATTR_RED EQU    31H         ; red foreground
+ATTR_BLU EQU    34H         ; blue foreground
+
+;--- Buffer descriptor field offsets ------------------
+BD_BSTAR EQU    0           ; 2: buffer base address
+BD_BSIZE EQU    2           ; 2: capacity in bytes
+BD_GAPBG EQU    4           ; 2: gap start offset
+BD_GAPEN EQU    6           ; 2: gap end offset
+BD_TXEND EQU    8           ; 2: logical data length
+BD_TOPOFF EQU   10          ; 2: top visible byte offset
+BD_CSOFF EQU    12          ; 2: cursor byte offset
+BD_MRKBG EQU    14          ; 2: block mark start (FFFF=unset)
+BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
+BD_MODIF EQU    18          ; 1: modified flag
+BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
+BD_FNAME EQU    20          ; 12: drive + filename + ext
+BD_SIZE  EQU    32          ; total descriptor size
+
+;--- File format codes --------------------------------
+FMT_BIN EQU     0           ; raw binary
+FMT_IHEX EQU    1           ; Intel HEX
+
+;--- Key types (from GETKEY) --------------------------
+KT_NONE EQU     0           ; no key
+KT_ACT  EQU     1           ; action code
+KT_CHAR EQU     2           ; printable character
+
+;--- Action codes -------------------------------------
+ACT_NONE  EQU   0
+ACT_CURUP EQU   1           ; cursor up (16 bytes)
+ACT_CURDN EQU   2           ; cursor down (16 bytes)
+ACT_CURLT EQU   3           ; cursor left (1 byte)
+ACT_CURRT EQU   4           ; cursor right (1 byte)
+ACT_PGUP  EQU   5           ; page up (320 bytes)
+ACT_PGDN  EQU   6           ; page down (320 bytes)
+ACT_HOME  EQU   7           ; start of row
+ACT_END   EQU   8           ; end of row
+ACT_FTOP  EQU   9           ; top of file
+ACT_FEND  EQU   10          ; end of file
+ACT_DELLF EQU   11          ; delete left (backspace)
+ACT_DELRT EQU   12          ; delete right
+ACT_TOGIN EQU   13          ; toggle ins/ovr
+ACT_TOGMD EQU   14          ; toggle hex/ascii mode
+ACT_FNDNX EQU   15          ; find next
+ACT_FSAVE EQU   16          ; save file
+ACT_FEXIT EQU   17          ; exit
+ACT_BLKMK EQU   18          ; block mark
+ACT_BLKCP EQU   19          ; block copy
+ACT_BLKDL EQU   20          ; block delete
+ACT_BLKPS EQU   21          ; block paste
+ACT_MENU  EQU   22          ; open ESC menu
+ACT_DELRW EQU   23          ; delete row (16 bytes)
+ACT_MAX   EQU   23          ; highest action code
+
+;--- Miscellaneous ------------------------------------
+MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
+CLIPMAX EQU     2048        ; clipboard buffer size
+SRCHMAX EQU     64          ; max search pattern length
+RECSIZ  EQU     128         ; CP/M record size
+MAXADDR EQU     0FFFFH      ; max displayable address
+
+
+        EXTRN   CURBDP          ; ptr to active descriptor
+
+        PUBLIC  GBINIT          ; init an empty buffer
+        PUBLIC  GBINSRT         ; insert byte at cursor
+        PUBLIC  GBDLFT          ; delete byte left (BS)
+        PUBLIC  GBDELRT         ; delete byte right
+        PUBLIC  GBMVLT          ; cursor left one byte
+        PUBLIC  GBMVRT          ; cursor right one byte
+        PUBLIC  GBMVTOP         ; cursor to offset 0
+        PUBLIC  GBMVEND         ; cursor to end of data
+        PUBLIC  GBMVTO          ; cursor to arbitrary offset
+        PUBLIC  GBRDBLK         ; read block for display
+        PUBLIC  GBLOGRD         ; read byte at logical offset
+        PUBLIC  GBTXEND         ; HL = TXEND
+        PUBLIC  GBBASE          ; DE = buffer base
+        PUBLIC  GBBSIZ          ; DE = buffer size
+        PUBLIC  GBGAPBG         ; HL = GAPBG
+        PUBLIC  GBGAPEN         ; HL = GAPEN
+        PUBLIC  GBCSOFF         ; HL = CSOFF
+        PUBLIC  GBTMP           ; last inserted/deleted byte
+
+        CSEG
+
+;=============================================================
+; GBINIT - Initialise a buffer descriptor for empty buffer.
+; Entry:  HL = buffer descriptor address
+;         DE = RAM buffer base address
+;         BC = RAM buffer size in bytes
+; Exit:   Descriptor initialised, gap = full capacity
+;         All regs clobbered
+;=============================================================
+GBINIT:
+        PUSH    H               ; save descriptor address
+        ; Store base address (BD_BSTAR at offset 0)
+        MOV     M,E             ; BD_BSTAR low
+        INX     H
+        MOV     M,D             ; BD_BSTAR high
+        INX     H
+        ; Store size (BD_BSIZE at offset 2)
+        MOV     M,C             ; BD_BSIZE low
+        INX     H
+        MOV     M,B             ; BD_BSIZE high
+        INX     H
+        ; GAPBG = 0 (BD_GAPBG at offset 4)
+        MVI     M,0
+        INX     H
+        MVI     M,0
+        ; GAPEN = BC (BD_GAPEN at offset 6)
+        POP     H
+        PUSH    H
+        MVI     A,BD_GAPEN
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     M,C
+        INX     H
+        MOV     M,B
+        ; TXEND = 0 (BD_TXEND at offset 8)
+        POP     H
+        PUSH    H
+        MVI     A,BD_TXEND
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MVI     M,0
+        INX     H
+        MVI     M,0
+        ; TOPOFF=0, CSOFF=0
+        POP     H
+        PUSH    H
+        MVI     A,BD_TOPOFF
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MVI     M,0             ; TOPOFF low
+        INX     H
+        MVI     M,0             ; TOPOFF high
+        INX     H
+        MVI     M,0             ; CSOFF low
+        INX     H
+        MVI     M,0             ; CSOFF high
+        INX     H
+        ; MRKBG = FFFF (BD_MRKBG at offset 14)
+        MVI     M,0FFH          ; MRKBG low
+        INX     H
+        MVI     M,0FFH          ; MRKBG high
+        INX     H
+        ; MRKEN = FFFF (BD_MRKEN at offset 16)
+        MVI     M,0FFH          ; MRKEN low
+        INX     H
+        MVI     M,0FFH          ; MRKEN high
+        INX     H
+        ; MODIF = 0 (BD_MODIF at offset 18)
+        MVI     M,0
+        POP     H
+        RET
+
+;=============================================================
+; GBINSRT - Insert byte A at current cursor position.
+; Entry:  A = byte to insert
+; Exit:   A=0 ok; A=0FFH buffer full; all regs clobbered
+;=============================================================
+GBINSRT:
+        STA     GBTMP           ; save byte to insert
+        ; Check gap is non-empty
+        CALL    GBGAPLN         ; HL = gap size
+        MOV     A,H
+        ORA     L
+        JZ      GBIFULL         ; gap=0 means full
+
+        ; Get descriptor fields
+        CALL    GBBASE          ; DE = buffer base
+        CALL    GBGAPBG         ; HL = GAPBG offset
+        ; Compute absolute address: DE+HL
+        DAD     D               ; HL = base + GAPBG
+        ; Write byte
+        LDA     GBTMP
+        MOV     M,A
+
+        ; Advance GAPBG by 1
+        CALL    GBGAPBG         ; HL = GAPBG offset
+        INX     H               ; +1
+        CALL    GBSETGAPBG      ; store new GAPBG
+
+        ; Advance TXEND by 1
+        CALL    GBTXEND         ; HL = TXEND
+        INX     H
+        CALL    GBSETTXEND
+
+        ; Advance cursor offset by 1
+        CALL    GBCSOFF         ; HL = cursor offset
+        INX     H
+        CALL    GBSETCSOFF
+
+        ; Mark buffer modified
+        CALL    GBSETMOD
+
+        XRA     A               ; A=0 = success
+        RET
+
+GBIFULL:
+        MVI     A,0FFH          ; A=FFH = buffer full
+        RET
+
+;=============================================================
+; GBDLFT - Delete byte to the left of cursor (backspace).
+; Entry:  (none)
+; Exit:   A=0 ok (deleted); A=FFH at beginning of buffer
+;         BD_MODIF set on success
+;=============================================================
+GBDLFT:
+        CALL    GBGAPBG         ; HL = GAPBG
+        MOV     A,H
+        ORA     L
+        JZ      GBDLERR         ; at start, nothing to delete
+
+        ; Save the byte being deleted
+        CALL    GBBASE          ; DE = buffer base
+        CALL    GBGAPBG         ; HL = GAPBG
+        DCX     H               ; HL = GAPBG - 1
+        DAD     D               ; abs address
+        MOV     A,M             ; byte before cursor
+        STA     GBTMP           ; save deleted byte
+
+        ; Shrink gap leftward: GAPBG -= 1
+        CALL    GBGAPBG
+        DCX     H
+        CALL    GBSETGAPBG
+
+        ; Shrink TXEND by 1
+        CALL    GBTXEND
+        DCX     H
+        CALL    GBSETTXEND
+
+        ; Update cursor offset -= 1
+        CALL    GBCSOFF
+        DCX     H
+        CALL    GBSETCSOFF
+
+        ; Mark buffer modified
+        CALL    GBSETMOD
+
+        XRA     A               ; A=0 = success
+        RET
+
+GBDLERR:
+        MVI     A,0FFH          ; at start
+        RET
+
+;=============================================================
+; GBDELRT - Delete byte to the right of cursor.
+; Entry:  (none)
+; Exit:   A=0 ok (deleted); A=FFH at end of buffer
+;         BD_MODIF set on success
+;=============================================================
+GBDELRT:
+        ; Check if at end: GAPEN >= BSIZE
+        CALL    GBGAPEN         ; HL = GAPEN
+        PUSH    H
+        CALL    GBBSIZ          ; DE = BSIZE
+        POP     H               ; HL = GAPEN
+        MOV     A,L
+        SUB     E
+        MOV     A,H
+        SBB     D
+        JNC     GBDRERR         ; GAPEN >= BSIZE, at end
+
+        ; Save the byte being deleted
+        CALL    GBBASE          ; DE = buffer base
+        CALL    GBGAPEN         ; HL = GAPEN
+        DAD     D               ; abs address
+        MOV     A,M             ; byte at right of gap
+        STA     GBTMP           ; save deleted byte
+
+        ; Expand gap rightward: GAPEN += 1
+        CALL    GBGAPEN
+        INX     H
+        CALL    GBSETGAPEN
+
+        ; Shrink TXEND by 1
+        CALL    GBTXEND
+        DCX     H
+        CALL    GBSETTXEND
+
+        ; Mark buffer modified
+        CALL    GBSETMOD
+
+        XRA     A               ; A=0 = success
+        RET
+
+GBDRERR:
+        MVI     A,0FFH          ; at end
+        RET
+
+;=============================================================
+; GBMVLT - Move cursor left one byte.
+; Copies byte from base+GAPBG-1 to base+GAPEN-1,
+; decrements GAPBG, GAPEN, CSOFF.
+; Entry:  (none)
+; Exit:   A=0 ok; A=FFH if at start; all regs clobbered
+;=============================================================
+GBMVLT:
+        CALL    GBGAPBG         ; HL = GAPBG
+        MOV     A,H
+        ORA     L
+        JZ      GBMLER          ; at start
+
+        ; Cache base address
+        CALL    GBBASE          ; DE = base
+        XCHG
+        SHLD    GLTBAS          ; save base
+        XCHG                    ; DE = base again
+
+        ; Get byte to left of gap: base + GAPBG - 1
+        CALL    GBGAPBG
+        DCX     H
+        DAD     D               ; abs address
+        MOV     A,M             ; byte being passed
+        STA     GBTMP
+
+        ; Write byte at right end of gap: base + GAPEN - 1
+        CALL    GBGAPEN
+        DCX     H
+        XCHG                    ; DE = GAPEN - 1
+        LHLD    GLTBAS          ; HL = base
+        DAD     D               ; HL = base + GAPEN - 1
+        LDA     GBTMP
+        MOV     M,A             ; write saved byte
+
+        ; Update GAPBG -= 1, GAPEN -= 1
+        CALL    GBGAPBG
+        DCX     H
+        CALL    GBSETGAPBG
+        CALL    GBGAPEN
+        DCX     H
+        CALL    GBSETGAPEN
+
+        ; Update cursor offset -= 1
+        CALL    GBCSOFF
+        DCX     H
+        CALL    GBSETCSOFF
+
+        XRA     A               ; A=0 = success
+        RET
+
+GBMLER:
+        MVI     A,0FFH
+        RET
+
+;=============================================================
+; GBMVRT - Move cursor right one byte.
+; Copies byte from base+GAPEN to base+GAPBG,
+; increments GAPBG, GAPEN, CSOFF.
+; Entry:  (none)
+; Exit:   A=0 ok; A=FFH if at end; all regs clobbered
+;=============================================================
+GBMVRT:
+        ; Check if at end: GAPEN >= BSIZE
+        CALL    GBGAPEN         ; HL = GAPEN
+        PUSH    H
+        CALL    GBBSIZ          ; DE = BSIZE
+        POP     H               ; HL = GAPEN
+        MOV     A,L
+        SUB     E
+        MOV     A,H
+        SBB     D
+        JNC     GBMRER          ; GAPEN >= BSIZE, at end
+
+        ; Cache base address
+        CALL    GBBASE          ; DE = base
+        XCHG
+        SHLD    GRTBAS          ; save base
+        XCHG                    ; DE = base again
+
+        ; Get byte at right side of gap: base + GAPEN
+        CALL    GBGAPEN         ; HL = GAPEN
+        DAD     D               ; HL = base + GAPEN
+        MOV     A,M
+        STA     GBTMP
+
+        ; Write byte at left of gap: base + GAPBG
+        CALL    GBGAPBG         ; HL = GAPBG
+        XCHG                    ; DE = GAPBG
+        LHLD    GRTBAS          ; HL = base
+        DAD     D               ; HL = base + GAPBG
+        LDA     GBTMP
+        MOV     M,A             ; write byte
+
+        ; Slide gap right: GAPBG += 1, GAPEN += 1
+        CALL    GBGAPBG
+        INX     H
+        CALL    GBSETGAPBG
+        CALL    GBGAPEN
+        INX     H
+        CALL    GBSETGAPEN
+
+        ; Cursor offset += 1
+        CALL    GBCSOFF
+        INX     H
+        CALL    GBSETCSOFF
+
+        XRA     A               ; A=0 = success
+        RET
+
+GBMRER:
+        MVI     A,0FFH
+        RET
+
+;=============================================================
+; GBMVTOP - Move cursor to offset 0.
+; Bulk copy: copies entire R1 (pre-gap) to end of gap
+; using backward copy (dest > src, safe).
+; Entry:  (none)
+; Exit:   CSOFF=0, GAPBG=0; all regs clobbered
+;=============================================================
+GBMVTOP:
+        CALL    GBGAPBG
+        MOV     A,H
+        ORA     L
+        RZ                      ; GAPBG=0, already at top
+        ; N = GAPBG (entire pre-gap region)
+        SHLD    GBKCNT
+        ; Save base address
+        CALL    GBBASE
+        XCHG
+        SHLD    GBKBAS
+        ; Dest end: base + GAPEN - 1
+        CALL    GBGAPEN
+        XCHG
+        LHLD    GBKBAS
+        DAD     D
+        DCX     H               ; HL = dest end
+        PUSH    H
+        ; Src end: base + GAPBG - 1
+        CALL    GBGAPBG
+        XCHG
+        LHLD    GBKBAS
+        DAD     D
+        DCX     H               ; HL = src end
+        PUSH    H
+        ; Load BC = N
+        LHLD    GBKCNT
+        MOV     B,H
+        MOV     C,L
+        POP     H               ; HL = src end
+        POP     D               ; DE = dest end
+        ; Copy backward (dest > src, safe)
+GVTCLP: MOV     A,M
+        STAX    D
+        DCX     H
+        DCX     D
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GVTCLP
+        ; --- Update descriptor fields ---
+        LHLD    GBKCNT
+        MOV     B,H
+        MOV     C,L             ; BC = N
+        ; GAPEN -= N (gap slides left)
+        CALL    GBGAPEN
+        MOV     A,L
+        SUB     C
+        MOV     L,A
+        MOV     A,H
+        SBB     B
+        MOV     H,A
+        CALL    GBSETGAPEN
+        ; GAPBG = 0
+        LXI     H,0
+        CALL    GBSETGAPBG
+        ; CSOFF = 0
+        LXI     H,0
+        JMP     GBSETCSOFF
+
+;=============================================================
+; GBMVEND - Move cursor to end of data.
+; Bulk copy: copies entire R2 (post-gap) to start of gap
+; using forward copy (dest < src, safe).
+; Entry:  (none)
+; Exit:   CSOFF=TXEND; all regs clobbered
+;=============================================================
+GBMVEND:
+        ; Compute N = BSIZE - GAPEN (entire R2 region)
+        CALL    GBGAPEN
+        PUSH    H
+        CALL    GBBSIZ          ; DE = BSIZE
+        POP     H               ; HL = GAPEN
+        MOV     A,E
+        SUB     L
+        MOV     C,A
+        MOV     A,D
+        SBB     H
+        MOV     B,A             ; BC = N = BSIZE - GAPEN
+        MOV     A,B
+        ORA     C
+        RZ                      ; N=0, already at end
+        MOV     H,B
+        MOV     L,C
+        SHLD    GBKCNT
+        ; Save base address
+        CALL    GBBASE
+        XCHG
+        SHLD    GBKBAS
+        ; Dest: base + GAPBG
+        CALL    GBGAPBG
+        XCHG
+        LHLD    GBKBAS
+        DAD     D               ; HL = dest
+        PUSH    H
+        ; Src: base + GAPEN
+        CALL    GBGAPEN
+        XCHG
+        LHLD    GBKBAS
+        DAD     D               ; HL = src
+        PUSH    H
+        ; Load BC = N
+        LHLD    GBKCNT
+        MOV     B,H
+        MOV     C,L
+        POP     H               ; HL = src
+        POP     D               ; DE = dest
+        ; Copy forward (dest < src, safe)
+GVECLP: MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GVECLP
+        ; --- Update descriptor fields ---
+        LHLD    GBKCNT
+        MOV     B,H
+        MOV     C,L             ; BC = N
+        ; GAPBG += N
+        CALL    GBGAPBG
+        DAD     B
+        CALL    GBSETGAPBG
+        ; GAPEN += N (= BSIZE)
+        CALL    GBGAPEN
+        DAD     B
+        CALL    GBSETGAPEN
+        ; CSOFF = TXEND
+        CALL    GBTXEND
+        JMP     GBSETCSOFF
+
+;=============================================================
+; GBMVTO - Move cursor to arbitrary offset in HL.
+; If HL < CSOFF, bulk move left; if HL > CSOFF, bulk right.
+; Entry:  HL = target logical offset
+; Exit:   Cursor at target (clamped to TXEND); regs clobbered
+;=============================================================
+GBMVTO:
+        ; Clamp target to TXEND
+        SHLD    GMTTRG          ; save target
+        PUSH    H
+        CALL    GBTXEND         ; HL = TXEND
+        POP     D               ; DE = target
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; target - TXEND
+        JC      GMTOK           ; target < TXEND, ok
+        ; target >= TXEND: clamp to TXEND
+        CALL    GBTXEND
+        SHLD    GMTTRG
+GMTOK:
+        ; Compare target with CSOFF
+        LHLD    GMTTRG
+        PUSH    H
+        CALL    GBCSOFF         ; HL = CSOFF
+        POP     D               ; DE = target
+        ; DE - HL = target - CSOFF
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H
+        JZ      GMTDNE          ; target == CSOFF, done
+        JC      GMTLFT          ; target < CSOFF, move left
+
+        ; --- Move right: target > CSOFF ---
+        ; N = target - CSOFF
+        PUSH    D               ; save target
+        CALL    GBCSOFF         ; HL = CSOFF
+        POP     D               ; DE = target
+        MOV     A,E
+        SUB     L
+        MOV     C,A
+        MOV     A,D
+        SBB     H
+        MOV     B,A             ; BC = N bytes to move right
+        MOV     H,B
+        MOV     L,C
+        SHLD    GBKCNT
+        ; Save base
+        CALL    GBBASE
+        XCHG
+        SHLD    GBKBAS
+        ; Src: base + GAPEN
+        CALL    GBGAPEN
+        XCHG
+        LHLD    GBKBAS
+        DAD     D               ; HL = src (base + GAPEN)
+        PUSH    H
+        ; Dest: base + GAPBG
+        CALL    GBGAPBG
+        XCHG
+        LHLD    GBKBAS
+        DAD     D               ; HL = dest (base + GAPBG)
+        XCHG                    ; DE = dest
+        ; Load BC = N
+        LHLD    GBKCNT
+        MOV     B,H
+        MOV     C,L
+        POP     H               ; HL = src
+        ; Copy forward (dest < src, safe)
+GMTRLP: MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GMTRLP
+        ; Update: GAPBG += N, GAPEN += N, CSOFF = target
+        LHLD    GBKCNT
+        MOV     B,H
+        MOV     C,L
+        CALL    GBGAPBG
+        DAD     B
+        CALL    GBSETGAPBG
+        CALL    GBGAPEN
+        DAD     B
+        CALL    GBSETGAPEN
+        LHLD    GMTTRG
+        CALL    GBSETCSOFF
+        RET
+
+GMTLFT:
+        ; --- Move left: target < CSOFF ---
+        ; N = CSOFF - target
+        PUSH    D               ; save target
+        CALL    GBCSOFF         ; HL = CSOFF
+        POP     D               ; DE = target
+        MOV     A,L
+        SUB     E
+        MOV     C,A
+        MOV     A,H
+        SBB     D
+        MOV     B,A             ; BC = N bytes to move left
+        MOV     H,B
+        MOV     L,C
+        SHLD    GBKCNT
+        ; Save base
+        CALL    GBBASE
+        XCHG
+        SHLD    GBKBAS
+        ; Src end: base + GAPBG - 1
+        CALL    GBGAPBG
+        XCHG
+        LHLD    GBKBAS
+        DAD     D
+        DCX     H               ; HL = src end
+        PUSH    H
+        ; Dest end: base + GAPEN - 1
+        CALL    GBGAPEN
+        XCHG
+        LHLD    GBKBAS
+        DAD     D
+        DCX     H               ; HL = dest end
+        XCHG                    ; DE = dest end
+        ; Load BC = N
+        LHLD    GBKCNT
+        MOV     B,H
+        MOV     C,L
+        POP     H               ; HL = src end
+        ; Copy backward (dest > src, safe)
+GMTLLP: MOV     A,M
+        STAX    D
+        DCX     H
+        DCX     D
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GMTLLP
+        ; Update: GAPBG -= N, GAPEN -= N, CSOFF = target
+        LHLD    GBKCNT
+        MOV     B,H
+        MOV     C,L
+        CALL    GBGAPBG
+        MOV     A,L
+        SUB     C
+        MOV     L,A
+        MOV     A,H
+        SBB     B
+        MOV     H,A
+        CALL    GBSETGAPBG
+        CALL    GBGAPEN
+        MOV     A,L
+        SUB     C
+        MOV     L,A
+        MOV     A,H
+        SBB     B
+        MOV     H,A
+        CALL    GBSETGAPEN
+        LHLD    GMTTRG
+        CALL    GBSETCSOFF
+
+GMTDNE: RET
+
+;=============================================================
+; GBRDBLK - Read block of bytes for hex display.
+; Reads BC bytes starting at logical offset HL into buffer
+; at DE, handling the gap transparently.
+; Entry:  HL = logical offset (0-based)
+;         DE = destination buffer address
+;         BC = count of bytes to read
+; Exit:   BC = actual bytes read (may be < requested if
+;              past end of data)
+;         DE = updated past last byte written
+;         All other regs clobbered
+; NOTE:   Does NOT move the cursor.
+;=============================================================
+GBRDBLK:
+        ; Save parameters
+        SHLD    GRBOFF          ; logical offset
+        XCHG
+        SHLD    GRBDST          ; destination
+        MOV     H,B
+        MOV     L,C
+        SHLD    GRBCNT          ; requested count
+        ; Init actual count = 0
+        LXI     H,0
+        SHLD    GRBACT
+
+        ; Clamp count: if offset >= TXEND, return 0
+        LHLD    GRBOFF
+        PUSH    H
+        CALL    GBTXEND         ; HL = TXEND
+        POP     D               ; DE = offset
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; offset - TXEND
+        JNC     GRBDONE         ; offset >= TXEND
+
+        ; Clamp count: if offset + count > TXEND, reduce count
+        CALL    GBTXEND         ; HL = TXEND
+        LHLD    GRBOFF
+        XCHG                    ; DE = offset
+        CALL    GBTXEND         ; HL = TXEND
+        ; remaining = TXEND - offset
+        MOV     A,L
+        SUB     E
+        MOV     C,A
+        MOV     A,H
+        SBB     D
+        MOV     B,A             ; BC = TXEND - offset
+        ; Is requested count > remaining?
+        LHLD    GRBCNT          ; HL = requested
+        MOV     A,L
+        SUB     C
+        MOV     A,H
+        SBB     B               ; requested - remaining
+        JC      GRBOK           ; requested < remaining, keep count
+        JZ      GRBOK           ; requested == remaining, keep count
+        ; Clamp: count = remaining
+        MOV     H,B
+        MOV     L,C
+        SHLD    GRBCNT
+GRBOK:
+        ; Now read GRBCNT bytes from logical offset GRBOFF.
+        ; The read may span the gap boundary.
+        ; Precompute GAPBG and gap size for address mapping.
+        CALL    GBGAPBG
+        SHLD    GRBGBG          ; save GAPBG
+        CALL    GBGAPLN         ; HL = gap size (GAPEN - GAPBG)
+        SHLD    GRBGSZ          ; save gap size
+        CALL    GBBASE
+        XCHG
+        SHLD    GRBBAS          ; save base
+
+        ; Determine how the read splits across the gap.
+        ; If offset >= GAPBG, entire read is in R2.
+        ; If offset + count <= GAPBG, entire read is in R1.
+        ; Otherwise, read straddles the gap.
+        LHLD    GRBOFF
+        XCHG                    ; DE = offset
+        LHLD    GRBGBG          ; HL = GAPBG
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; offset - GAPBG
+        JNC     GRBR2           ; offset >= GAPBG: all in R2
+
+        ; offset < GAPBG: check if offset + count <= GAPBG
+        LHLD    GRBOFF
+        XCHG                    ; DE = offset
+        LHLD    GRBCNT          ; HL = count
+        DAD     D               ; HL = offset + count
+        XCHG                    ; DE = offset + count
+        LHLD    GRBGBG          ; HL = GAPBG
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; (offset+count) - GAPBG
+        JC      GRBR1           ; offset+count < GAPBG: all in R1
+        JZ      GRBR1           ; offset+count == GAPBG: all in R1
+
+        ; --- Straddling the gap ---
+        ; Part 1: read from R1 (offset to GAPBG-1)
+        ; n1 = GAPBG - offset
+        LHLD    GRBGBG          ; HL = GAPBG
+        XCHG                    ; DE = GAPBG
+        LHLD    GRBOFF          ; HL = offset
+        MOV     A,E
+        SUB     L
+        MOV     C,A
+        MOV     A,D
+        SBB     H
+        MOV     B,A             ; BC = n1 = GAPBG - offset
+        PUSH    B               ; save n1
+        ; Src: base + offset
+        LHLD    GRBBAS
+        XCHG                    ; DE = base
+        LHLD    GRBOFF          ; HL = offset
+        DAD     D               ; HL = base + offset = src
+        ; Dest
+        LHLD    GRBDST
+        XCHG                    ; DE = dest
+        POP     B               ; BC = n1
+        ; Copy n1 bytes forward
+GRBS1L: MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GRBS1L
+        ; Update dest pointer
+        XCHG
+        SHLD    GRBDST
+        ; Part 2: read from R2 (GAPBG to end of request)
+        ; n2 = count - n1 = count - (GAPBG - offset)
+        ; Src: base + GAPEN (first byte of R2)
+        LHLD    GRBBAS
+        XCHG                    ; DE = base
+        CALL    GBGAPEN         ; HL = GAPEN
+        DAD     D               ; HL = base + GAPEN = src
+        ; Dest: current GRBDST
+        LHLD    GRBDST
+        XCHG                    ; DE = dest
+        ; n2 = total count - n1
+        ; n1 = GAPBG - offset
+        LHLD    GRBCNT          ; HL = total count
+        PUSH    H
+        LHLD    GRBGBG
+        XCHG                    ; DE = GAPBG
+        LHLD    GRBOFF          ; HL = offset
+        MOV     A,E
+        SUB     L
+        MOV     C,A
+        MOV     A,D
+        SBB     H
+        MOV     B,A             ; BC = n1
+        POP     H               ; HL = total count
+        MOV     A,L
+        SUB     C
+        MOV     C,A
+        MOV     A,H
+        SBB     B
+        MOV     B,A             ; BC = n2
+        ; Restore src (base + GAPEN)
+        LHLD    GRBBAS
+        XCHG                    ; DE = base
+        CALL    GBGAPEN         ; HL = GAPEN
+        DAD     D               ; HL = base + GAPEN = src
+        LHLD    GRBDST
+        XCHG                    ; DE = dest
+        ; Copy n2 bytes forward
+GRBS2L: MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GRBS2L
+        JMP     GRBFIN
+
+GRBR1:
+        ; Entire read in R1: physical addr = base + offset
+        LHLD    GRBBAS
+        XCHG                    ; DE = base
+        LHLD    GRBOFF          ; HL = offset
+        DAD     D               ; HL = base + offset = src
+        LHLD    GRBDST
+        XCHG                    ; DE = dest
+        LHLD    GRBCNT
+        MOV     B,H
+        MOV     C,L             ; BC = count
+        ; Copy BC bytes
+GRR1LP: MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GRR1LP
+        JMP     GRBFIN
+
+GRBR2:
+        ; Entire read in R2: physical = base + offset + gapsize
+        LHLD    GRBOFF          ; HL = logical offset
+        XCHG                    ; DE = offset
+        LHLD    GRBGSZ          ; HL = gap size
+        DAD     D               ; HL = offset + gapsize
+        XCHG                    ; DE = physical offset
+        LHLD    GRBBAS          ; HL = base
+        DAD     D               ; HL = base + offset + gapsize = src
+        LHLD    GRBDST
+        XCHG                    ; DE = dest
+        LHLD    GRBCNT
+        MOV     B,H
+        MOV     C,L             ; BC = count
+        ; Copy BC bytes
+GRR2LP: MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GRR2LP
+
+GRBFIN:
+        ; Return actual bytes read in BC
+        LHLD    GRBCNT
+        MOV     B,H
+        MOV     C,L
+        RET
+
+GRBDONE:
+        ; Return 0 bytes read
+        LXI     B,0
+        RET
+
+;=============================================================
+; GBLOGRD - Read single byte at logical offset HL.
+; Entry:  HL = logical offset (0-based)
+; Exit:   A = byte value; Z flag set if past end
+;         HL preserved
+;         Does NOT move the cursor.
+;=============================================================
+GBLOGRD:
+        SHLD    GBLOFF          ; save logical offset
+        PUSH    H
+        CALL    GBTXEND         ; HL = TXEND
+        MOV     A,L
+        ORA     H
+        POP     H
+        JZ      GBLRZ           ; empty buffer
+
+        ; Compare offset HL with TXEND: is offset >= TXEND?
+        PUSH    H
+        CALL    GBTXEND         ; HL = TXEND
+        POP     D               ; DE = offset
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; offset - TXEND
+        JNC     GBLRZ           ; offset >= TXEND
+
+        ; Adjust for gap: is offset < GAPBG?
+        PUSH    D               ; save offset
+        CALL    GBGAPBG         ; HL = GAPBG
+        POP     D               ; DE = offset
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; offset - GAPBG
+        JC      GBLRDI          ; offset < GAPBG: in R1, direct
+
+        ; offset >= GAPBG: physical = offset + gapsize
+        PUSH    D
+        CALL    GBGAPEN
+        MOV     B,H
+        MOV     C,L             ; BC = GAPEN
+        CALL    GBGAPBG
+        ; gapsize = GAPEN - GAPBG
+        MOV     A,C
+        SUB     L
+        MOV     C,A
+        MOV     A,B
+        SBB     H
+        MOV     B,A             ; BC = gap size
+        POP     D               ; DE = logical offset
+        MOV     A,E
+        ADD     C
+        MOV     E,A
+        MOV     A,D
+        ADC     B
+        MOV     D,A             ; DE = physical offset
+
+GBLRDI:
+        ; DE = physical offset; compute abs addr = base + physical
+        PUSH    D               ; save physical (GBBASE clobbers DE)
+        CALL    GBBASE          ; DE = buffer base
+        POP     H               ; HL = physical offset
+        DAD     D               ; HL = base + physical = abs addr
+        MOV     A,M
+        MOV     B,A             ; save byte
+        LHLD    GBLOFF          ; restore caller's HL
+        MOV     A,B             ; A = byte
+        ORI     1               ; force NZ (byte exists)
+        RET
+
+GBLRZ:
+        LHLD    GBLOFF          ; restore caller's HL
+        XRA     A               ; A=0, Z=1 (past end)
+        RET
+
+;=============================================================
+; Accessor functions: read descriptor fields
+;=============================================================
+
+; GBTXEND: HL = TXEND (data length)
+GBTXEND:
+        LHLD    CURBDP
+        MVI     A,BD_TXEND
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+        INX     H
+        MOV     H,M
+        MOV     L,A
+        RET
+
+; GBBASE: DE = buffer base address (clobbers A, HL)
+GBBASE:
+        LHLD    CURBDP
+        MVI     A,BD_BSTAR
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        RET
+
+; GBBSIZ: DE = buffer size (clobbers A, HL)
+GBBSIZ:
+        LHLD    CURBDP
+        MVI     A,BD_BSIZE
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        RET
+
+; GBGAPBG: HL = GAPBG offset
+GBGAPBG:
+        LHLD    CURBDP
+        MVI     A,BD_GAPBG
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+        INX     H
+        MOV     H,M
+        MOV     L,A
+        RET
+
+; GBGAPEN: HL = GAPEN offset
+GBGAPEN:
+        LHLD    CURBDP
+        MVI     A,BD_GAPEN
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+        INX     H
+        MOV     H,M
+        MOV     L,A
+        RET
+
+; GBCSOFF: HL = CSOFF (cursor byte offset)
+GBCSOFF:
+        LHLD    CURBDP
+        MVI     A,BD_CSOFF
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+        INX     H
+        MOV     H,M
+        MOV     L,A
+        RET
+
+; GBGAPLN: HL = gap size (GAPEN - GAPBG) -- internal helper
+GBGAPLN:
+        CALL    GBGAPEN
+        MOV     B,H
+        MOV     C,L             ; BC = GAPEN
+        CALL    GBGAPBG         ; HL = GAPBG
+        MOV     A,C
+        SUB     L
+        MOV     L,A
+        MOV     A,B
+        SBB     H
+        MOV     H,A             ; HL = GAPEN - GAPBG
+        RET
+
+;=============================================================
+; Setter functions: write descriptor fields
+;=============================================================
+
+; GBSETGAPBG: store HL into GAPBG field
+GBSETGAPBG:
+        PUSH    H
+        LHLD    CURBDP
+        MVI     A,BD_GAPBG
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        POP     D
+        MOV     M,E
+        INX     H
+        MOV     M,D
+        RET
+
+; GBSETGAPEN: store HL into GAPEN field
+GBSETGAPEN:
+        PUSH    H
+        LHLD    CURBDP
+        MVI     A,BD_GAPEN
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        POP     D
+        MOV     M,E
+        INX     H
+        MOV     M,D
+        RET
+
+; GBSETTXEND: store HL into TXEND field
+GBSETTXEND:
+        PUSH    H
+        LHLD    CURBDP
+        MVI     A,BD_TXEND
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        POP     D
+        MOV     M,E
+        INX     H
+        MOV     M,D
+        RET
+
+; GBSETCSOFF: store HL into CSOFF field
+GBSETCSOFF:
+        PUSH    H
+        LHLD    CURBDP
+        MVI     A,BD_CSOFF
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        POP     D
+        MOV     M,E
+        INX     H
+        MOV     M,D
+        RET
+
+; GBSETMOD: mark buffer as modified (BD_MODIF = 1)
+GBSETMOD:
+        LHLD    CURBDP
+        MVI     A,BD_MODIF
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MVI     M,1
+        RET
+
+;=============================================================
+; DSEG - Working variables
+;=============================================================
+        DSEG
+
+GBTMP:  DB      0               ; last inserted/deleted byte
+GBLOFF: DW      0               ; GBLOGRD: saved logical offset
+
+; Bulk copy working variables (GBMVTOP, GBMVEND, GBMVTO)
+GBKBAS: DW      0               ; buffer base address
+GBKCNT: DW      0               ; byte count for bulk copy
+
+; GBMVRT/GBMVLT cached base address
+GRTBAS: DW      0               ; cached GBBASE for GBMVRT
+GLTBAS: DW      0               ; cached GBBASE for GBMVLT
+
+; GBMVTO working variables
+GMTTRG: DW      0               ; target offset
+
+; GBRDBLK working variables
+GRBOFF: DW      0               ; logical offset
+GRBDST: DW      0               ; destination buffer pointer
+GRBCNT: DW      0               ; requested byte count
+GRBACT: DW      0               ; actual bytes read
+GRBGBG: DW      0               ; saved GAPBG
+GRBGSZ: DW      0               ; saved gap size
+GRBBAS: DW      0               ; saved buffer base
+
+        END
+

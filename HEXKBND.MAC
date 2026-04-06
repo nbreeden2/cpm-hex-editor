@@ -1,0 +1,932 @@
+;============================================================
+; FILE:    HEXKBND.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Key binding initialisation. Loads optional HEDIT.KEY
+;   file from the current drive and applies the bindings
+;   to the tables in HEXKEY.MAC.  If the file is absent,
+;   the compiled-in defaults already in KBDTBL, CSITBL,
+;   SS3TBL, CTKTBL, and CTQTBL remain unchanged.
+;
+;   HEDIT.KEY format (plain text lines, ; = comment):
+;     CTRL  <n>  <action>   ; bind ctrl-n (0-31) to action
+;     CSI   <byte> <param> <action>
+;     SS3   <byte> <action>
+;     CTK   <char> <action> ; ctrl-K prefix
+;     CTQ   <char> <action> ; ctrl-Q prefix
+;
+;   Action names are case-insensitive (matched uppercase):
+;     CURUP, CURDN, CURLT, CURRT, PGUP, PGDN,
+;     HOME, END, FTOP, FEND, DELLF, DELRT, DELRW,
+;     TOGIN, TOGMD, FNDNX, FSAVE, FEXIT,
+;     BLKMK, BLKCP, BLKDL, BLKPS, MENU
+;
+;   KBINIT is called once at startup before the main loop.
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.0  1984-01-01  Initial release
+;============================================================
+
+;============================================================
+; FILE:    HEDIT.INC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.0
+; DATE:    1984-01-01
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Shared equates for all HEDIT modules.
+;   INCLUDE this as the first statement of every .MAC file.
+;------------------------------------------------------------
+
+;--- CP/M system addresses ----------------------------
+BDOS    EQU     0005H       ; BDOS call entry
+WBOOT   EQU     0000H       ; warm boot / exit
+DFTFCB  EQU     005CH       ; default FCB (arg 1)
+CMDTAIL EQU     0080H       ; command tail buffer
+
+;--- BDOS function numbers ----------------------------
+BF_CONIN  EQU   1           ; console input (wait)
+BF_CONOUT EQU   2           ; console output: E=char
+BF_RAWIO  EQU   6           ; direct I/O: E=FFH->in
+BF_PRTSTR EQU   9           ; print $-string: DE=addr
+BF_RDLINE EQU   10          ; buffered line input
+BF_CONST  EQU   11          ; console status
+BF_FOPEN  EQU   15          ; open file: DE=FCB
+BF_FCLOSE EQU   16          ; close file: DE=FCB
+BF_FDEL   EQU   19          ; delete: DE=FCB
+BF_FREAD  EQU   20          ; seq read: DE=FCB
+BF_FWRITE EQU   21          ; seq write: DE=FCB
+BF_FMAKE  EQU   22          ; create: DE=FCB
+BF_SETDMA EQU   26          ; set DMA: DE=addr
+BF_USRNUM EQU   32          ; get/set user: E=num
+BF_CURDSK EQU   25          ; get current disk
+
+;--- FCB field offsets --------------------------------
+FCB_DR  EQU     0           ; drive (0=default, 1=A, etc.)
+FCB_F1  EQU     1           ; filename (8 bytes)
+FCB_T1  EQU     9           ; extension (3 bytes)
+FCB_EX  EQU     12          ; extent number
+FCB_RC  EQU     15          ; record count
+FCB_CR  EQU     32          ; current record
+
+;--- ASCII control codes ------------------------------
+NUL     EQU     00H
+BEL     EQU     07H         ; bell
+BS      EQU     08H         ; backspace
+TAB     EQU     09H         ; horizontal tab
+LF      EQU     0AH         ; line feed
+CR      EQU     0DH         ; carriage return
+ESC     EQU     1BH         ; escape
+DEL     EQU     7FH         ; delete character
+CPMEOF  EQU     1AH         ; CP/M EOF marker (Ctrl-Z)
+CTRLK   EQU     0BH         ; Ctrl-K (prefix key)
+CTRLQ   EQU     11H         ; Ctrl-Q (prefix key)
+
+;--- Screen layout ------------------------------------
+SCRROWS EQU     24          ; terminal row count
+SCRCOLS EQU     80          ; terminal column count
+EDITROW EQU     20          ; hex data rows (rows 3-22)
+EDITFR  EQU     3           ; first edit row (1-based)
+INFOROW EQU     1           ; info bar row
+HDRROW  EQU     2           ; column header row
+SEPRROW EQU     23          ; separator (===) row
+STATROW EQU     24          ; status/message row
+
+;--- Hex display layout -------------------------------
+BYTESROW EQU    16          ; bytes per display row
+BYTESPG EQU     320         ; bytes per page (EDITROW*BYTESROW)
+HEXFCOL EQU     7           ; first hex column (1-based)
+ASCFCOL EQU     58          ; first ASCII column (1-based)
+GRPSEP  EQU     31          ; column of group separator space
+ADDRWID EQU     6           ; width of "XXXX: " address field
+
+;--- Hex input modes ----------------------------------
+MODE_HEX EQU   0           ; editing in hex field
+MODE_ASC EQU   1           ; editing in ASCII field
+MODE_OVR EQU   0           ; overwrite mode
+MODE_INS EQU   1           ; insert mode
+
+;--- SGR attribute byte values ------------------------
+ATTR_NRM EQU    00H         ; normal
+ATTR_BLD EQU    01H         ; bold
+ATTR_DIM EQU    02H         ; dim
+ATTR_REV EQU    07H         ; reverse video
+ATTR_CYN EQU    36H         ; cyan foreground
+ATTR_GRN EQU    32H         ; green foreground
+ATTR_YEL EQU    33H         ; yellow foreground
+ATTR_MAG EQU    35H         ; magenta foreground
+ATTR_RED EQU    31H         ; red foreground
+ATTR_BLU EQU    34H         ; blue foreground
+
+;--- Buffer descriptor field offsets ------------------
+BD_BSTAR EQU    0           ; 2: buffer base address
+BD_BSIZE EQU    2           ; 2: capacity in bytes
+BD_GAPBG EQU    4           ; 2: gap start offset
+BD_GAPEN EQU    6           ; 2: gap end offset
+BD_TXEND EQU    8           ; 2: logical data length
+BD_TOPOFF EQU   10          ; 2: top visible byte offset
+BD_CSOFF EQU    12          ; 2: cursor byte offset
+BD_MRKBG EQU    14          ; 2: block mark start (FFFF=unset)
+BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
+BD_MODIF EQU    18          ; 1: modified flag
+BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
+BD_FNAME EQU    20          ; 12: drive + filename + ext
+BD_SIZE  EQU    32          ; total descriptor size
+
+;--- File format codes --------------------------------
+FMT_BIN EQU     0           ; raw binary
+FMT_IHEX EQU    1           ; Intel HEX
+
+;--- Key types (from GETKEY) --------------------------
+KT_NONE EQU     0           ; no key
+KT_ACT  EQU     1           ; action code
+KT_CHAR EQU     2           ; printable character
+
+;--- Action codes -------------------------------------
+ACT_NONE  EQU   0
+ACT_CURUP EQU   1           ; cursor up (16 bytes)
+ACT_CURDN EQU   2           ; cursor down (16 bytes)
+ACT_CURLT EQU   3           ; cursor left (1 byte)
+ACT_CURRT EQU   4           ; cursor right (1 byte)
+ACT_PGUP  EQU   5           ; page up (320 bytes)
+ACT_PGDN  EQU   6           ; page down (320 bytes)
+ACT_HOME  EQU   7           ; start of row
+ACT_END   EQU   8           ; end of row
+ACT_FTOP  EQU   9           ; top of file
+ACT_FEND  EQU   10          ; end of file
+ACT_DELLF EQU   11          ; delete left (backspace)
+ACT_DELRT EQU   12          ; delete right
+ACT_TOGIN EQU   13          ; toggle ins/ovr
+ACT_TOGMD EQU   14          ; toggle hex/ascii mode
+ACT_FNDNX EQU   15          ; find next
+ACT_FSAVE EQU   16          ; save file
+ACT_FEXIT EQU   17          ; exit
+ACT_BLKMK EQU   18          ; block mark
+ACT_BLKCP EQU   19          ; block copy
+ACT_BLKDL EQU   20          ; block delete
+ACT_BLKPS EQU   21          ; block paste
+ACT_MENU  EQU   22          ; open ESC menu
+ACT_DELRW EQU   23          ; delete row (16 bytes)
+ACT_MAX   EQU   23          ; highest action code
+
+;--- Miscellaneous ------------------------------------
+MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
+CLIPMAX EQU     2048        ; clipboard buffer size
+SRCHMAX EQU     64          ; max search pattern length
+RECSIZ  EQU     128         ; CP/M record size
+MAXADDR EQU     0FFFFH      ; max displayable address
+
+
+;--- Imports ----------------------------------------------
+        EXTRN   KBDTBL          ; ctrl key action table (32 bytes)
+        EXTRN   STATMSG         ; display status message
+        EXTRN   OUTSTR          ; write $-string to console
+
+;--- Exports ----------------------------------------------
+        PUBLIC  KBINIT          ; initialise key bindings
+
+;=============================================================
+; Action name -> code lookup table.
+; Each entry: length_byte, chars (uppercase), action_code.
+; Table ends with DB 0.
+;=============================================================
+        CSEG
+
+ACTNMTB:
+        DB      5,'C','U','R','U','P',ACT_CURUP
+        DB      5,'C','U','R','D','N',ACT_CURDN
+        DB      5,'C','U','R','L','T',ACT_CURLT
+        DB      5,'C','U','R','R','T',ACT_CURRT
+        DB      4,'P','G','U','P',ACT_PGUP
+        DB      4,'P','G','D','N',ACT_PGDN
+        DB      4,'H','O','M','E',ACT_HOME
+        DB      3,'E','N','D',ACT_END
+        DB      4,'F','T','O','P',ACT_FTOP
+        DB      4,'F','E','N','D',ACT_FEND
+        DB      5,'D','E','L','L','F',ACT_DELLF
+        DB      5,'D','E','L','R','T',ACT_DELRT
+        DB      5,'D','E','L','R','W',ACT_DELRW
+        DB      5,'T','O','G','I','N',ACT_TOGIN
+        DB      5,'T','O','G','M','D',ACT_TOGMD
+        DB      5,'F','N','D','N','X',ACT_FNDNX
+        DB      5,'F','S','A','V','E',ACT_FSAVE
+        DB      5,'F','E','X','I','T',ACT_FEXIT
+        DB      5,'B','L','K','M','K',ACT_BLKMK
+        DB      5,'B','L','K','C','P',ACT_BLKCP
+        DB      5,'B','L','K','D','L',ACT_BLKDL
+        DB      5,'B','L','K','P','S',ACT_BLKPS
+        DB      4,'M','E','N','U',ACT_MENU
+        DB      0               ; end of table
+
+;=============================================================
+; KBINIT - Initialise key bindings.
+; Attempts to open HEDIT.KEY; if found, reads lines and
+; applies bindings to KBDTBL and related tables.
+; Entry:  (none)
+; Exit:   All regs clobbered.
+;=============================================================
+KBINIT:
+        ; Try to open HEDIT.KEY
+        LXI     H,KBFCB
+        CALL    KBFCINIT        ; zero and set name in FCB
+
+        LXI     D,KBFCB
+        MVI     C,BF_FOPEN
+        CALL    BDOS
+        INR     A               ; 0FFH -> 0 means not found
+        JZ      KBDONE          ; file not found, use defaults
+
+        ; File open: read 128-byte records and scan lines
+        XRA     A
+        STA     KBEOF           ; clear EOF flag
+        STA     KBLPOS          ; clear line buffer position
+
+KBRDLP:
+        LDA     KBEOF
+        ORA     A
+        JNZ     KBCLOS
+
+        ; Set DMA and read record
+        LXI     D,KBDMABF
+        MVI     C,BF_SETDMA
+        CALL    BDOS
+        LXI     D,KBFCB
+        MVI     C,BF_FREAD
+        CALL    BDOS
+        ORA     A
+        JNZ     KBCLOS          ; EOF or error
+
+        ; Parse the 128-byte record byte by byte
+        LXI     H,KBDMABF
+        MVI     B,RECSIZ        ; B = bytes remaining
+
+KBSCNB:
+        MOV     A,B
+        ORA     A
+        JZ      KBRDLP          ; done with this record
+
+        MOV     A,M
+        CPI     CPMEOF
+        JZ      KBCLOS          ; CP/M EOF marker
+
+        ; Check for end of line
+        CPI     LF
+        JZ      KBEOL
+        CPI     CR
+        JZ      KBSKPC          ; skip CR, wait for LF
+
+        ; Accumulate char into line buffer
+        PUSH    H
+        PUSH    B
+        LDA     KBLPOS
+        CPI     78              ; line buffer limit
+        JNC     KBA_SK          ; line too long, skip char
+        MOV     E,A
+        MVI     D,0
+        LXI     H,KBLBUF
+        DAD     D
+        POP     B               ; restore B
+        POP     H               ; restore source ptr
+        PUSH    H
+        PUSH    B
+        MOV     A,M             ; re-read source byte
+        PUSH    H
+        MOV     E,A
+        MVI     D,0
+        LDA     KBLPOS
+        MOV     L,A
+        MVI     H,0
+        LXI     D,KBLBUF
+        DAD     D
+        MOV     A,E             ; hmm, need source byte
+        ; Simplify: save source byte first
+        POP     H
+        POP     B
+        POP     H
+        ; Redo more carefully
+        PUSH    H
+        PUSH    B
+        MOV     A,M             ; read source byte from record
+        STA     KBTMP           ; save it
+        LDA     KBLPOS
+        CPI     78
+        JNC     KBA_SK
+        MOV     L,A
+        MVI     H,0
+        LXI     D,KBLBUF
+        DAD     D               ; HL = &KBLBUF[KBLPOS]
+        LDA     KBTMP
+        MOV     M,A             ; store char in line buf
+        LDA     KBLPOS
+        INR     A
+        STA     KBLPOS
+KBA_SK:
+        POP     B
+        POP     H
+
+KBSKPC: ; Advance to next byte in record
+        INX     H
+        DCR     B
+        JMP     KBSCNB
+
+KBEOL:  ; End of line reached - process line buffer
+        PUSH    H
+        PUSH    B
+        ; NUL-terminate the line buffer
+        LDA     KBLPOS
+        MOV     L,A
+        MVI     H,0
+        LXI     D,KBLBUF
+        DAD     D
+        MVI     M,0             ; NUL terminator
+        ; Parse the line if non-empty
+        LDA     KBLPOS
+        ORA     A
+        JZ      KBEOL2          ; empty line, skip
+        CALL    KBPRSLN         ; parse one binding line
+KBEOL2:
+        ; Reset line buffer
+        XRA     A
+        STA     KBLPOS
+        POP     B
+        POP     H
+        JMP     KBSKPC          ; advance past LF
+
+KBCLOS:
+        LXI     D,KBFCB
+        MVI     C,BF_FCLOSE
+        CALL    BDOS
+
+KBDONE:
+        RET
+
+;=============================================================
+; KBPRSLN - Parse one binding line from KBLBUF.
+; Format: TYPE PARAM ACTION
+; Entry:  KBLBUF contains NUL-terminated line.
+; Exit:   Table patched if valid; ignored otherwise.
+;         All regs clobbered.
+;=============================================================
+KBPRSLN:
+        LXI     H,KBLBUF
+
+        ; Skip leading whitespace
+        CALL    KBSKWS
+
+        ; Check for comment or empty
+        MOV     A,M
+        ORA     A
+        RZ                      ; empty line
+        CPI     ';'
+        RZ                      ; comment line
+
+        ; Try to match keyword
+        ; Save pointer to keyword start
+        SHLD    KBKWPTR
+
+        ; Check "CTRL"
+        LXI     D,KWCTRL
+        MVI     B,4
+        CALL    KBCMPKW
+        JZ      KBCTRL
+
+        ; Check "CSI"
+        LHLD    KBKWPTR
+        LXI     D,KWCSI
+        MVI     B,3
+        CALL    KBCMPKW
+        JZ      KBCSI
+
+        ; Check "SS3"
+        LHLD    KBKWPTR
+        LXI     D,KWSS3
+        MVI     B,3
+        CALL    KBCMPKW
+        JZ      KBSS3
+
+        ; Check "CTK"
+        LHLD    KBKWPTR
+        LXI     D,KWCTK
+        MVI     B,3
+        CALL    KBCMPKW
+        JZ      KBCTK
+
+        ; Check "CTQ"
+        LHLD    KBKWPTR
+        LXI     D,KWCTQ
+        MVI     B,3
+        CALL    KBCMPKW
+        JZ      KBCTQ
+
+        ; Unknown keyword, ignore line
+        RET
+
+;------------------------------------------------------------
+; KBCTRL - Parse: CTRL <n> <action>
+; HL points past "CTRL" keyword.
+;------------------------------------------------------------
+KBCTRL:
+        CALL    KBSKWS          ; skip whitespace
+        CALL    KBPNUM          ; parse decimal number -> A
+        JC      KBPERR          ; parse error
+        CPI     32
+        JNC     KBPERR          ; ctrl code must be 0-31
+        STA     KBPVAL          ; save ctrl code
+
+        CALL    KBSKWS          ; skip whitespace
+        CALL    KBPACT          ; parse action name -> A
+        ORA     A
+        RZ                      ; unknown action, ignore
+
+        ; Patch KBDTBL[KBPVAL]
+        MOV     B,A             ; B = action code
+        LDA     KBPVAL
+        MOV     L,A
+        MVI     H,0
+        LXI     D,KBDTBL
+        DAD     D               ; HL = &KBDTBL[n]
+        MOV     M,B             ; patch action
+        RET
+
+;------------------------------------------------------------
+; KBCSI - Parse: CSI <byte> <param> <action>
+; Scans CSITBL for matching (byte,param), patches action.
+;------------------------------------------------------------
+KBCSI:
+        CALL    KBSKWS
+        MOV     A,M             ; final byte (char)
+        ORA     A
+        RZ
+        STA     KBCSIB          ; save final byte
+        INX     H
+
+        CALL    KBSKWS
+        CALL    KBPNUM          ; parse param number -> A
+        JC      KBPERR
+        STA     KBCSIP          ; save param
+
+        CALL    KBSKWS
+        CALL    KBPACT          ; parse action name -> A
+        ORA     A
+        RZ
+
+        ; Search CSITBL for matching entry
+        MOV     B,A             ; B = action code
+        PUSH    B
+        LXI     H,CSITBL
+KBCSLP: MOV     A,M             ; final byte
+        ORA     A
+        JZ      KBCSAD          ; end of table, try to add
+        LDA     KBCSIB
+        CMP     M               ; compare final byte
+        JNZ     KBCSNX
+        INX     H
+        LDA     KBCSIP
+        CMP     M               ; compare param
+        JNZ     KBCSN2
+        ; Match found - patch action
+        INX     H
+        POP     B
+        MOV     M,B
+        RET
+KBCSN2: INX     H               ; skip param
+        INX     H               ; skip action
+        JMP     KBCSLP
+KBCSNX: INX     H               ; skip final byte
+        INX     H               ; skip param
+        INX     H               ; skip action
+        JMP     KBCSLP
+KBCSAD: ; Could not find entry (no room to add)
+        POP     B
+        RET
+
+;------------------------------------------------------------
+; KBSS3 - Parse: SS3 <byte> <action>
+; Scans SS3TBL for matching byte, patches action.
+;------------------------------------------------------------
+KBSS3:
+        CALL    KBSKWS
+        MOV     A,M             ; byte char
+        ORA     A
+        RZ
+        STA     KBS3BT          ; save byte
+        INX     H
+
+        CALL    KBSKWS
+        CALL    KBPACT          ; parse action name -> A
+        ORA     A
+        RZ
+
+        ; Search SS3TBL
+        MOV     B,A             ; B = action code
+        PUSH    B
+        LXI     H,SS3TBL
+KBS3LP: MOV     A,M
+        ORA     A
+        JZ      KBS3DN          ; end of table
+        LDA     KBS3BT
+        CMP     M               ; compare byte
+        JNZ     KBS3NX
+        ; Match found - patch action
+        INX     H
+        POP     B
+        MOV     M,B
+        RET
+KBS3NX: INX     H               ; skip byte
+        INX     H               ; skip action
+        JMP     KBS3LP
+KBS3DN: POP     B
+        RET
+
+;------------------------------------------------------------
+; KBCTK - Parse: CTK <char> <action>
+; Scans CTKTBL for matching char, patches action.
+;------------------------------------------------------------
+KBCTK:
+        CALL    KBSKWS
+        MOV     A,M             ; char
+        ORA     A
+        RZ
+        STA     KBTKCH          ; save char
+        INX     H
+
+        CALL    KBSKWS
+        CALL    KBPACT          ; parse action -> A
+        ORA     A
+        RZ
+
+        ; Search CTKTBL for upper and lower case
+        MOV     B,A             ; B = action
+        PUSH    B
+        LDA     KBTKCH
+        CALL    KBUPR           ; uppercase
+        STA     KBTKCH
+        LXI     H,CTKTBL
+KBTKLP: MOV     A,M
+        ORA     A
+        JZ      KBTKDN          ; end of table
+        CALL    KBUPR           ; uppercase table char
+        LDA     KBTKCH
+        CMP     M               ; compare (original)
+        JNZ     KBTK2
+        ; Match: not exact, redo properly
+KBTK2:  ; Compare uppercase versions
+        MOV     A,M
+        CALL    KBUPR
+        MOV     C,A             ; C = uppercase table char
+        LDA     KBTKCH          ; already uppercase
+        CMP     C
+        JNZ     KBTKNX
+        ; Match found - patch action byte
+        INX     H
+        POP     B
+        MOV     M,B
+        ; Also patch lowercase entry (next pair)
+        INX     H               ; next char
+        MOV     A,M
+        ORA     A
+        RZ                      ; end of table, done
+        INX     H               ; action byte
+        MOV     M,B             ; patch lowercase too
+        RET
+KBTKNX: INX     H               ; skip char
+        INX     H               ; skip action
+        JMP     KBTKLP
+KBTKDN: POP     B
+        RET
+
+;------------------------------------------------------------
+; KBCTQ - Parse: CTQ <char> <action>
+; Scans CTQTBL for matching char, patches action.
+;------------------------------------------------------------
+KBCTQ:
+        CALL    KBSKWS
+        MOV     A,M             ; char
+        ORA     A
+        RZ
+        STA     KBTQCH          ; save char
+        INX     H
+
+        CALL    KBSKWS
+        CALL    KBPACT          ; parse action -> A
+        ORA     A
+        RZ
+
+        ; Search CTQTBL for upper and lower case
+        MOV     B,A             ; B = action
+        PUSH    B
+        LDA     KBTQCH
+        CALL    KBUPR           ; uppercase
+        STA     KBTQCH
+        LXI     H,CTQTBL
+KBTQLP: MOV     A,M
+        ORA     A
+        JZ      KBTQDN          ; end of table
+        MOV     A,M
+        CALL    KBUPR
+        MOV     C,A
+        LDA     KBTQCH
+        CMP     C
+        JNZ     KBTQNX
+        ; Match found - patch action byte
+        INX     H
+        POP     B
+        MOV     M,B
+        ; Also patch lowercase entry
+        INX     H
+        MOV     A,M
+        ORA     A
+        RZ
+        INX     H
+        MOV     M,B
+        RET
+KBTQNX: INX     H               ; skip char
+        INX     H               ; skip action
+        JMP     KBTQLP
+KBTQDN: POP     B
+        RET
+
+KBPERR: ; Parse error, ignore line
+        RET
+
+;=============================================================
+; KBCMPKW - Compare keyword (case insensitive).
+; Entry:  HL = source string, DE = keyword, B = length.
+; Exit:   Z if match (HL advanced past keyword), NZ if not.
+;=============================================================
+KBCMPKW:
+        PUSH    D
+        PUSH    B
+KBCKLP: MOV     A,M
+        CALL    KBUPR           ; uppercase source char
+        MOV     C,A
+        LDAX    D               ; keyword char (already upper)
+        CMP     C
+        JNZ     KBCKNM          ; mismatch
+        INX     H
+        INX     D
+        DCR     B
+        JNZ     KBCKLP
+        ; All matched - check char after keyword is space or NUL
+        MOV     A,M
+        CPI     ' '
+        JZ      KBCKM
+        CPI     TAB
+        JZ      KBCKM
+        ORA     A
+        JZ      KBCKM
+        ; No delimiter after keyword - not a match
+KBCKNM: POP     B
+        POP     D
+        MVI     A,1
+        ORA     A               ; set NZ
+        RET
+KBCKM:  POP     B
+        POP     D
+        XRA     A               ; set Z
+        RET
+
+;=============================================================
+; KBPNUM - Parse decimal number from string.
+; Entry:  HL = string pointer.
+; Exit:   A = value (0-255), HL past digits. CY if error.
+;=============================================================
+KBPNUM:
+        MVI     B,0             ; accumulator
+        MOV     A,M
+        CPI     '0'
+        JC      KBPNE           ; not a digit
+        CPI     '9'+1
+        JNC     KBPNE
+KBPNL:  MOV     A,M
+        CPI     '0'
+        JC      KBPND           ; done
+        CPI     '9'+1
+        JNC     KBPND
+        SUI     '0'             ; A = digit value
+        MOV     C,A             ; save digit
+        ; B = B * 10 + digit
+        MOV     A,B
+        ADD     A               ; *2
+        ADD     A               ; *4
+        ADD     B               ; *5
+        ADD     A               ; *10
+        ADD     C               ; +digit
+        MOV     B,A
+        INX     H
+        JMP     KBPNL
+KBPND:  MOV     A,B
+        ORA     A               ; clear CY
+        RET
+KBPNE:  STC                     ; set CY = error
+        RET
+
+;=============================================================
+; KBPACT - Parse action name from string.
+; Entry:  HL = pointer into string (past whitespace).
+; Exit:   A = action code (0 if not found). HL past name.
+;=============================================================
+KBPACT:
+        ; Copy name chars to KBACTBF (uppercase, NUL-terminated)
+        LXI     D,KBACTBF
+        MVI     B,0             ; length counter
+KBPAL:  MOV     A,M
+        CPI     ' '
+        JZ      KBPAD           ; end of name
+        CPI     TAB
+        JZ      KBPAD
+        ORA     A
+        JZ      KBPAD
+        CPI     ';'
+        JZ      KBPAD           ; comment starts
+        CALL    KBUPR
+        STAX    D
+        INX     D
+        INX     H
+        INR     B
+        MOV     A,B
+        CPI     16              ; max name length
+        JNC     KBPAD
+        JMP     KBPAL
+KBPAD:  MVI     A,0
+        STAX    D               ; NUL-terminate
+        ; Now look up KBACTBF in ACTNMTB
+        PUSH    H               ; save source pointer
+        LXI     H,KBACTBF
+        CALL    ACLOOKUP
+        POP     H
+        RET
+
+;=============================================================
+; ACLOOKUP - Look up action name in ACTNMTB.
+; Entry:  HL = NUL-terminated uppercase name string.
+; Exit:   A = action code, or 0 if not found.
+;=============================================================
+ACLOOKUP:
+        ; Compute name length
+        PUSH    H
+        MVI     B,0
+ACLENL: MOV     A,M
+        ORA     A
+        JZ      ACLEND
+        INR     B
+        INX     H
+        JMP     ACLENL
+ACLEND: POP     H
+        ; B = name length
+
+        LXI     D,ACTNMTB
+ACLKLP:
+        LDAX    D               ; entry length
+        ORA     A
+        JZ      ACLNF           ; end of table
+        CMP     B
+        JNZ     ACLNXT          ; length mismatch
+
+        ; Compare chars
+        PUSH    H
+        PUSH    D
+        PUSH    B
+        INX     D               ; past length byte
+        MOV     C,B             ; C = count
+ACLCMP:
+        LDAX    D               ; table char (uppercase)
+        CMP     M               ; compare with input
+        JNZ     ACLCNM          ; no match
+        INX     D
+        INX     H
+        DCR     C
+        JNZ     ACLCMP
+        ; Full match: action code is at DE
+        LDAX    D
+        MOV     C,A             ; save action code
+        POP     B
+        POP     D
+        POP     H
+        MOV     A,C             ; return action code
+        RET
+
+ACLCNM:
+        POP     B
+        POP     D
+        POP     H
+
+ACLNXT:
+        ; Skip this entry: 1 + length + 1 bytes
+        LDAX    D               ; entry length
+        MOV     C,A
+        INX     D               ; skip length byte
+ACSKP:  INX     D               ; skip name chars
+        DCR     C
+        JNZ     ACSKP
+        INX     D               ; skip action code
+        JMP     ACLKLP
+
+ACLNF:  XRA     A               ; not found: return 0
+        RET
+
+;=============================================================
+; KBSKWS - Skip whitespace (space and tab).
+; Entry:  HL = string pointer.
+; Exit:   HL past whitespace. A = first non-ws char.
+;=============================================================
+KBSKWS:
+        MOV     A,M
+        CPI     ' '
+        JZ      KBSKNX
+        CPI     TAB
+        JZ      KBSKNX
+        RET
+KBSKNX: INX     H
+        JMP     KBSKWS
+
+;=============================================================
+; KBUPR - Convert char in A to uppercase.
+; Entry:  A = character.
+; Exit:   A = uppercase (if was a-z), else unchanged.
+;=============================================================
+KBUPR:
+        CPI     'a'
+        RC                      ; < 'a', no change
+        CPI     'z'+1
+        RNC                     ; > 'z', no change
+        ANI     5FH             ; clear bit 5 = uppercase
+        RET
+
+;=============================================================
+; KBFCINIT - Build HEDIT.KEY FCB.
+; Sets drive=0, name="HEDIT   ", ext="KEY".
+;=============================================================
+KBFCINIT:
+        LXI     H,KBFCB
+        MVI     B,36            ; FCB_SIZ
+        XRA     A
+KBFCZL: MOV     M,A
+        INX     H
+        DCR     B
+        JNZ     KBFCZL
+        ; Set name "HEDIT   " in FCB bytes 1-8
+        LXI     H,KBFCB+1
+        LXI     D,KBFNAME
+        MVI     B,8
+KBFNNL: LDAX    D
+        MOV     M,A
+        INX     D
+        INX     H
+        DCR     B
+        JNZ     KBFNNL
+        ; Set extension "KEY" in FCB bytes 9-11
+        MVI     M,'K'
+        INX     H
+        MVI     M,'E'
+        INX     H
+        MVI     M,'Y'
+        RET
+
+;=============================================================
+; Externs for table patching (declared in HEXKEY.MAC)
+;=============================================================
+        EXTRN   CSITBL          ; CSI sequence table
+        EXTRN   SS3TBL          ; SS3 sequence table
+        EXTRN   CTKTBL          ; Ctrl-K prefix table
+        EXTRN   CTQTBL          ; Ctrl-Q prefix table
+
+;=============================================================
+; DATA SEGMENT
+;=============================================================
+        DSEG
+
+KBFCB:   DS     36              ; FCB for HEDIT.KEY
+KBDMABF: DS     RECSIZ          ; DMA buffer for key file
+KBEOF:   DB     0               ; end-of-file flag
+KBLPOS:  DB     0               ; position in line buffer
+KBLBUF:  DS     80              ; line buffer
+KBTMP:   DB     0               ; temp byte
+
+; HEDIT.KEY filename in FCB-name format (space padded)
+KBFNAME: DB     'H','E','D','I','T',' ',' ',' '
+
+; Keywords for comparison (uppercase)
+KWCTRL: DB      'C','T','R','L'
+KWCSI:  DB      'C','S','I'
+KWSS3:  DB      'S','S','3'
+KWCTK:  DB      'C','T','K'
+KWCTQ:  DB      'C','T','Q'
+
+; Parser working variables
+KBKWPTR: DW     0               ; saved keyword pointer
+KBPVAL:  DB     0               ; parsed numeric value
+KBCSIB:  DB     0               ; CSI final byte
+KBCSIP:  DB     0               ; CSI parameter
+KBS3BT:  DB     0               ; SS3 byte
+KBTKCH:  DB     0               ; CTK char
+KBTQCH:  DB     0               ; CTQ char
+KBACTBF: DS     20              ; action name buffer
+
+        END
+
