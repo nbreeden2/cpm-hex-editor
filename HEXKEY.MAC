@@ -156,7 +156,8 @@ ACT_BLKDL EQU   20          ; block delete
 ACT_BLKPS EQU   21          ; block paste
 ACT_MENU  EQU   22          ; open ESC menu
 ACT_DELRW EQU   23          ; delete row (16 bytes)
-ACT_MAX   EQU   23          ; highest action code
+ACT_ENTER EQU   24          ; enter key (used by menu)
+ACT_MAX   EQU   24          ; highest action code
 
 ;--- Miscellaneous ------------------------------------
 MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
@@ -477,7 +478,7 @@ KBDTBL:
         DB      0               ; 10 ^J  - unused
         DB      0               ; 11 ^K  - prefix (block)
         DB      ACT_FNDNX       ; 12 ^L  - find next
-        DB      0               ; 13 ^M  - unused (Enter)
+        DB      ACT_ENTER       ; 13 ^M  - Enter key
         DB      0               ; 14 ^N  - unused
         DB      ACT_BLKCP       ; 15 ^O  - block copy
         DB      0               ; 16 ^P  - unused

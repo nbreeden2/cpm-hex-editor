@@ -139,7 +139,8 @@ ACT_BLKDL EQU   20          ; block delete
 ACT_BLKPS EQU   21          ; block paste
 ACT_MENU  EQU   22          ; open ESC menu
 ACT_DELRW EQU   23          ; delete row (16 bytes)
-ACT_MAX   EQU   23          ; highest action code
+ACT_ENTER EQU   24          ; enter key (used by menu)
+ACT_MAX   EQU   24          ; highest action code
 
 ;--- Miscellaneous ------------------------------------
 MINMEM  EQU     9*1024      ; minimum TPA (9 KB)

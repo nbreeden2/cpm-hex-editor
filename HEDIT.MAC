@@ -172,7 +172,8 @@ ACT_BLKDL EQU   20          ; block delete
 ACT_BLKPS EQU   21          ; block paste
 ACT_MENU  EQU   22          ; open ESC menu
 ACT_DELRW EQU   23          ; delete row (16 bytes)
-ACT_MAX   EQU   23          ; highest action code
+ACT_ENTER EQU   24          ; enter key (used by menu)
+ACT_MAX   EQU   24          ; highest action code
 
 ;--- Miscellaneous ------------------------------------
 MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
@@ -1077,6 +1078,7 @@ ACTTBL:
         DW      DO_BPS          ; 21 ACT_BLKPS
         DW      DO_MNU          ; 22 ACT_MENU
         DW      DO_DRW          ; 23 ACT_DELRW
+        DW      MAINLP          ; 24 ACT_ENTER (no-op in editor)
 
 ;--- String constants ---------------------------------
 NOMEMSG: DB     'Insufficient memory',CR,LF,'$'

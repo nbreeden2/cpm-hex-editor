@@ -11,16 +11,16 @@
 ;   and dispatches the selected item action on Enter.
 ;   Menu is dismissed without action on ESC or 'Q'.
 ;
-;   Menu items (9 total):
-;     1. Open File
-;     2. Save File
-;     3. Save As...
-;     4. Find (hex/ASCII)...
-;     5. Go To Offset...
-;     6. Help
-;     7. About
-;     8. Toggle Format (BIN/HEX)
-;     9. Exit
+;   Menu items (9 total, shortcut letter in bold):
+;     1. [O]pen File
+;     2. [S]ave File
+;     3. Save [A]s...
+;     4. [F]ind (hex/ASCII)...
+;     5. [G]o To Offset...
+;     6. [H]elp
+;     7. A[b]out
+;     8. [T]oggle Format (BIN/HEX)
+;     9. E[x]it
 ;------------------------------------------------------------
 ; REVISION HISTORY:
 ;   1.0  1984-01-01  Initial release
@@ -167,7 +167,8 @@ ACT_BLKDL EQU   20          ; block delete
 ACT_BLKPS EQU   21          ; block paste
 ACT_MENU  EQU   22          ; open ESC menu
 ACT_DELRW EQU   23          ; delete row (16 bytes)
-ACT_MAX   EQU   23          ; highest action code
+ACT_ENTER EQU   24          ; enter key (used by menu)
+ACT_MAX   EQU   24          ; highest action code
 
 ;--- Miscellaneous ------------------------------------
 MINMEM  EQU     9*1024      ; minimum TPA (9 KB)
@@ -212,7 +213,7 @@ MNUROW2 EQU     18              ; bottom border row
 MNUCOL1 EQU     25              ; left border col
 MNUCOL2 EQU     54              ; right border col
 MNUITMS EQU     9               ; number of menu items
-MNUFROW EQU     MNUROW1+2       ; first item row
+MNUFROW EQU     MNUROW1+3       ; first item row (after border+title+sep)
 MNUTCOL EQU     MNUCOL1+2       ; text start column
 
 ;=============================================================
@@ -247,8 +248,6 @@ MNULP:
 
         ; KT_CHAR: check printable characters
         MOV     A,C
-        CPI     CR
-        JZ      MNUACT          ; Enter = select
         CPI     'K'
         JZ      MNUUP
         CPI     'k'
@@ -260,15 +259,55 @@ MNULP:
 
         ; Digit shortcut 1-9
         CPI     '1'
-        JC      MNULP           ; below '1', ignore
+        JC      MNULSC          ; below '1', check letters
         CPI     '9'+1
-        JNC     MNULP           ; above '9', ignore
+        JNC     MNULSC          ; above '9', check letters
         SUI     '1'             ; 0-based index
+        STA     MNUSEL
+        JMP     MNUACT
+
+        ; Letter shortcuts (case-insensitive)
+MNULSC: ORI     20H             ; force lowercase
+        CPI     'o'
+        MVI     B,0             ; Open
+        JZ      MNULSL
+        CPI     's'
+        MVI     B,1             ; Save
+        JZ      MNULSL
+        CPI     'a'
+        MVI     B,2             ; Save As
+        JZ      MNULSL
+        CPI     'f'
+        MVI     B,3             ; Find
+        JZ      MNULSL
+        CPI     'g'
+        MVI     B,4             ; Go To
+        JZ      MNULSL
+        CPI     'h'
+        MVI     B,5             ; Help
+        JZ      MNULSL
+        CPI     'b'
+        MVI     B,6             ; aBout
+        JZ      MNULSL
+        CPI     't'
+        MVI     B,7             ; Toggle format
+        JZ      MNULSL
+        CPI     'x'
+        MVI     B,8             ; eXit
+        JZ      MNULSL
+        CPI     'e'
+        MVI     B,8             ; Exit
+        JZ      MNULSL
+        JMP     MNULP           ; unrecognised, ignore
+
+MNULSL: MOV     A,B
         STA     MNUSEL
         JMP     MNUACT
 
 MNUACD: ; Action code in C
         MOV     A,C
+        CPI     ACT_ENTER
+        JZ      MNUACT          ; Enter = select
         CPI     ACT_CURUP
         JZ      MNUUP
         CPI     ACT_CURDN
@@ -626,13 +665,6 @@ MNUDRAW:
         LXI     D,MNUTIT
         CALL    OUTSTR
 
-        ; Title separator
-        MVI     B,MNUROW1+1
-        MVI     C,MNUCOL1
-        CALL    CURGOTO
-        LXI     D,MNUTIT
-        CALL    OUTSTR
-
         ; Separator under title
         MVI     B,MNUFROW-1
         MVI     C,MNUCOL1
@@ -794,7 +826,7 @@ MNUTOP: DB      '+','=','=','=','=','=','=','=','=','=','='
         DB      '=','=','=','=','=','=','=','=','=','=','='
         DB      '=','=','=','=','=','=','=','+','$'
 
-MNUTIT: DB      '|','     HEDIT  MENU          ','|','$'
+MNUTIT: DB      '|','       HEDIT  MENU          ','|','$'
 
 MNUSEP: DB      '+','=','=','=','=','=','=','=','=','=','='
         DB      '=','=','=','=','=','=','=','=','=','=','='
@@ -808,15 +840,26 @@ MNUBOT: DB      '+','=','=','=','=','=','=','=','=','=','='
         DB      '=','=','=','=','=','=','=','+','$'
 
 ; Item text strings (padded to 26 chars for uniform highlight)
-MNTX1:  DB      '1. Open File              $'
-MNTX2:  DB      '2. Save File              $'
-MNTX3:  DB      '3. Save As...             $'
-MNTX4:  DB      '4. Find (hex/ASCII)...    $'
-MNTX5:  DB      '5. Go To Offset...        $'
-MNTX6:  DB      '6. Help                   $'
-MNTX7:  DB      '7. About                  $'
-MNTX8:  DB      '8. Toggle Format (BIN/HEX)$'
-MNTX9:  DB      '9. Exit                   $'
+;              visible:  1234567890123456789012345678
+;                       |--- 26 visible chars ---|
+MNTX1:  DB      '1. ',ESC,'[1m','O',ESC,'[0m'
+        DB      'pen File              $'
+MNTX2:  DB      '2. ',ESC,'[1m','S',ESC,'[0m'
+        DB      'ave File              $'
+MNTX3:  DB      '3. Save ',ESC,'[1m','A',ESC,'[0m'
+        DB      's...             $'
+MNTX4:  DB      '4. ',ESC,'[1m','F',ESC,'[0m'
+        DB      'ind (hex/ASCII)...    $'
+MNTX5:  DB      '5. ',ESC,'[1m','G',ESC,'[0m'
+        DB      'o To Offset...        $'
+MNTX6:  DB      '6. ',ESC,'[1m','H',ESC,'[0m'
+        DB      'elp                   $'
+MNTX7:  DB      '7. A',ESC,'[1m','b',ESC,'[0m'
+        DB      'out                  $'
+MNTX8:  DB      '8. ',ESC,'[1m','T',ESC,'[0m'
+        DB      'oggle Format (B/H)    $'
+MNTX9:  DB      '9. E',ESC,'[1m','x',ESC,'[0m'
+        DB      'it                   $'
 
 ; Prompt strings
 OPNPMT: DB      'Open file: $'
