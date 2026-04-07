@@ -17,8 +17,8 @@
 ;     3. Save [A]s...
 ;     4. [F]ind (hex/ASCII)...
 ;     5. [G]o To Offset...
-;     6. [H]elp
-;     7. A[b]out
+;     6. [H]elp / About
+;     7. [B]ase Offset...
 ;     8. [T]oggle Format (BIN/HEX)
 ;     9. E[x]it
 ;------------------------------------------------------------
@@ -131,7 +131,8 @@ BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
 BD_MODIF EQU    18          ; 1: modified flag
 BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
 BD_FNAME EQU    20          ; 12: drive + filename + ext
-BD_SIZE  EQU    32          ; total descriptor size
+BD_BADDR EQU    32          ; 2: base address (Intel HEX origin)
+BD_SIZE  EQU    34          ; total descriptor size
 
 ;--- File format codes --------------------------------
 FMT_BIN EQU     0           ; raw binary
@@ -287,7 +288,7 @@ MNULSC: ORI     20H             ; force lowercase
         MVI     B,5             ; Help
         JZ      MNULSL
         CPI     'b'
-        MVI     B,6             ; aBout
+        MVI     B,6             ; Base Offset
         JZ      MNULSL
         CPI     't'
         MVI     B,7             ; Toggle format
@@ -450,21 +451,35 @@ MNHELP:
         STA     DIRTY
         RET
 
-;--- 7. About ---------------------------------------------
-MNABUT:
-        LXI     D,ABTMSG
+;--- 7. Base Offset (for Intel HEX files) ----------------
+MNBOFF:
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,BOFPMT
+        CALL    OUTSTR
+        ; Read 2 hex digits (MSByte of base address)
+        CALL    RDHEX2          ; A = byte, CY = cancelled
+        JC      MNBFDN          ; cancelled
+        ; Store as high byte of BD_BADDR, low byte = 00
+        MOV     D,A             ; D = MSByte
+        LHLD    CURBDP
+        PUSH    D
+        MVI     A,BD_BADDR
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A             ; HL -> BD_BADDR
+        POP     D
+        MVI     M,0             ; low byte = 00
+        INX     H
+        MOV     M,D             ; high byte = user input
+        CALL    STATCLR
+        LXI     D,BOFSET
         CALL    STATMSG
-        ; Drain buffered input then wait for fresh key
-MNADRN: MVI     E,0FFH
-        MVI     C,BF_RAWIO
-        CALL    BDOS
-        ORA     A
-        JNZ     MNADRN
-MNAKEY: MVI     E,0FFH
-        MVI     C,BF_RAWIO
-        CALL    BDOS
-        ORA     A
-        JZ      MNAKEY
+MNBFDN: MVI     A,1
+        STA     DIRTY
         RET
 
 ;--- 8. Toggle Format (BIN/HEX) --------------------------
@@ -644,6 +659,99 @@ RDHESC: ; Cancel
 
 RDHDNE: ; Done, return value in HL
         LHLD    RDHVAL
+        ORA     A               ; clear carry
+        RET
+
+;=============================================================
+; RDHEX2 - Read up to 2 hex chars, return byte in A.
+; Entry:  Cursor positioned for input.
+; Exit:   A = byte value, CY clear.
+;         CY set if ESC pressed (cancelled).
+;=============================================================
+RDHEX2:
+        LXI     H,0
+        SHLD    RDHVAL
+        MVI     A,0
+        STA     RDHCNT
+
+RDH2LP: MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JZ      RDH2LP
+
+        CPI     ESC
+        JZ      RDHESC          ; cancel (shared with RDHEX4)
+
+        CPI     CR
+        JZ      RDH2DN          ; done
+
+        CPI     BS
+        JZ      RDHBS           ; backspace (shared)
+        CPI     DEL
+        JZ      RDHBS
+
+        ; Valid hex digit?
+        CPI     '0'
+        JC      RDH2LP
+        CPI     '9'+1
+        JC      RDH2DG
+        CPI     'A'
+        JC      RDH2LP
+        CPI     'F'+1
+        JC      RDH2UP
+        CPI     'a'
+        JC      RDH2LP
+        CPI     'f'+1
+        JNC     RDH2LP
+        SUI     20H             ; to upper
+
+RDH2UP: SUI     'A'-10
+        JMP     RDH2V2
+
+RDH2DG: SUI     '0'
+
+RDH2V2: ; Check digit count < 2
+        PUSH    PSW
+        LDA     RDHCNT
+        CPI     2
+        JNC     RDH2FL          ; already 2 digits
+        INR     A
+        STA     RDHCNT
+        POP     PSW
+
+        ; Shift and add
+        STA     RDHDIG
+        LHLD    RDHVAL
+        DAD     H
+        DAD     H
+        DAD     H
+        DAD     H
+        LDA     RDHDIG
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        SHLD    RDHVAL
+
+        ; Echo
+        LDA     RDHDIG
+        CPI     10
+        JC      RDH2E0
+        ADI     'A'-10
+        JMP     RDH2EC
+RDH2E0: ADI     '0'
+RDH2EC: MOV     E,A
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        JMP     RDH2LP
+
+RDH2FL: POP     PSW
+        JMP     RDH2LP
+
+RDH2DN: ; Return low byte in A
+        LDA     RDHVAL          ; low byte of accumulator
         ORA     A               ; clear carry
         RET
 
@@ -853,9 +961,9 @@ MNTX4:  DB      '4. ',ESC,'[1m','F',ESC,'[0m'
 MNTX5:  DB      '5. ',ESC,'[1m','G',ESC,'[0m'
         DB      'o To Offset...        $'
 MNTX6:  DB      '6. ',ESC,'[1m','H',ESC,'[0m'
-        DB      'elp                   $'
-MNTX7:  DB      '7. A',ESC,'[1m','b',ESC,'[0m'
-        DB      'out                  $'
+        DB      'elp / About           $'
+MNTX7:  DB      '7. ',ESC,'[1m','B',ESC,'[0m'
+        DB      'ase Offset...         $'
 MNTX8:  DB      '8. ',ESC,'[1m','T',ESC,'[0m'
         DB      'oggle Format (B/H)    $'
 MNTX9:  DB      '9. E',ESC,'[1m','x',ESC,'[0m'
@@ -865,7 +973,8 @@ MNTX9:  DB      '9. E',ESC,'[1m','x',ESC,'[0m'
 OPNPMT: DB      'Open file: $'
 SVAPMT: DB      'Save as: $'
 GTOPMT: DB      'Go to offset (hex): $'
-ABTMSG: DB      'HEDIT v1.0 CP/M Hex Editor  (any key)$'
+BOFPMT: DB      'Base offset (00-FF): $'
+BOFSET: DB      'Base offset set.$'
 MTFBIN: DB      'Format: Binary$'
 MTFHEX: DB      'Format: Intel HEX$'
 
@@ -876,8 +985,8 @@ MNUTBL:
         DW      MNSVAS          ; 2 Save As
         DW      MNFIND          ; 3 Find
         DW      MNGOTO          ; 4 Go To Offset
-        DW      MNHELP          ; 5 Help
-        DW      MNABUT          ; 6 About
+        DW      MNHELP          ; 5 Help / About
+        DW      MNBOFF          ; 6 Base Offset
         DW      MNTFMT          ; 7 Toggle Format
         DW      MNQUIT          ; 8 Exit
 

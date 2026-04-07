@@ -103,7 +103,8 @@ BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
 BD_MODIF EQU    18          ; 1: modified flag
 BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
 BD_FNAME EQU    20          ; 12: drive + filename + ext
-BD_SIZE  EQU    32          ; total descriptor size
+BD_BADDR EQU    32          ; 2: base address (Intel HEX origin)
+BD_SIZE  EQU    34          ; total descriptor size
 
 ;--- File format codes --------------------------------
 FMT_BIN EQU     0           ; raw binary

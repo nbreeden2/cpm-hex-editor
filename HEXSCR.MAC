@@ -120,7 +120,8 @@ BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
 BD_MODIF EQU    18          ; 1: modified flag
 BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
 BD_FNAME EQU    20          ; 12: drive + filename + ext
-BD_SIZE  EQU    32          ; total descriptor size
+BD_BADDR EQU    32          ; 2: base address (Intel HEX origin)
+BD_SIZE  EQU    34          ; total descriptor size
 
 ;--- File format codes --------------------------------
 FMT_BIN EQU     0           ; raw binary
@@ -219,7 +220,7 @@ LDNGMST: DB     '[Loading]','$'
 
 ;--- Column header string (row 2) ---------------------
 COLHDR:  DB     'Addr: 00 01 02 03 04 05 06 07'
-         DB     '  08 09 0A 0B 0C 0D 0E 0F  ASCII'
+         DB     '  08 09 0A 0B 0C 0D 0E 0F   ASCII'
          DB     '$'
 
 ;--- Hex digit table ----------------------------------
@@ -611,7 +612,7 @@ SHHLOK:
         LXI     D,SGRBGN        ; bold green
         CALL    OUTSTR
 
-        ; Calculate address = TOPOFF + row*16
+        ; Calculate address = BD_BADDR + TOPOFF + row*16
         LDA     SHROW
         MOV     L,A
         MVI     H,0
@@ -621,7 +622,22 @@ SHHLOK:
         DAD     H               ; HL = row*16
         XCHG
         LHLD    SDTOPOFF
-        DAD     D               ; HL = address
+        DAD     D               ; HL = TOPOFF + row*16
+        XCHG                    ; DE = logical offset
+        PUSH    D               ; save for later
+        LHLD    CURBDP
+        MVI     A,BD_BADDR
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+        INX     H
+        MOV     H,M
+        MOV     L,A             ; HL = BD_BADDR
+        POP     D               ; DE = logical offset
+        DAD     D               ; HL = base + offset = display addr
         CALL    OUTN4HX         ; output 4 hex digits
 
         ; ": " separator
@@ -931,6 +947,19 @@ INFOBAR:
         ORA     A
         JNZ     IBLDNG
 
+        ;--- Check if file has a name ---
+        LHLD    CURBDP
+        LXI     D,BD_FNAME+1    ; first char of name
+        DAD     D
+        MOV     A,M
+        CPI     ' '
+        JNZ     IBHNAM          ; has a name
+        ; No name: show [No Name]
+        LXI     D,NAMNMST
+        CALL    OUTSTR
+        JMP     IBSIZE
+
+IBHNAM:
         ;--- Drive letter ---
         LHLD    CURBDP
         LXI     D,BD_FNAME
@@ -1039,10 +1068,23 @@ IBSIZE:
         CALL    GBTXEND         ; HL = data length
         CALL    OUTN4HX
 
-        ;--- Off: XXXX ---
+        ;--- Off: XXXX (base + cursor offset) ---
         LXI     D,IBOFSTR
         CALL    OUTSTR
         CALL    GBCSOFF         ; HL = cursor offset
+        XCHG                    ; DE = cursor offset
+        LHLD    CURBDP
+        MVI     A,BD_BADDR
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+        INX     H
+        MOV     H,M
+        MOV     L,A             ; HL = BD_BADDR
+        DAD     D               ; HL = base + cursor offset
         CALL    OUTN4HX
 
         ;--- [INS] or [OVR] ---

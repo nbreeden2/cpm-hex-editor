@@ -121,7 +121,8 @@ BD_MRKEN EQU    16          ; 2: block mark end (FFFF=unset)
 BD_MODIF EQU    18          ; 1: modified flag
 BD_FILEFMT EQU  19          ; 1: file format (0=bin, 1=ihex)
 BD_FNAME EQU    20          ; 12: drive + filename + ext
-BD_SIZE  EQU    32          ; total descriptor size
+BD_BADDR EQU    32          ; 2: base address (Intel HEX origin)
+BD_SIZE  EQU    34          ; total descriptor size
 
 ;--- File format codes --------------------------------
 FMT_BIN EQU     0           ; raw binary
@@ -325,6 +326,8 @@ FIIHEX:
 	; Initialise Intel HEX state
 	LXI	H,0
 	SHLD	IHNEXT		; next expected address = 0
+	XRA	A
+	STA	IHFIRST		; flag: first data record not seen
 
 	; First record already in DMABUF from format detection.
 	; Reset CR to 1 so next BF_FREAD gets record 1.
@@ -349,9 +352,27 @@ FIHLP:
 	CPI	01H		; EOF record?
 	JZ	FIEOF
 
+	; Type 02 (Extended Segment) or 04 (Extended Linear)?
+	CPI	02H
+	JZ	FIHEXT
+	CPI	04H
+	JZ	FIHEXT
+
 	ORA	A		; type 00 = data?
 	JNZ	FIHLP		; skip unknown types
 
+	; First data record? Save base address, skip gap fill.
+	LDA	IHFIRST
+	ORA	A
+	JNZ	FIHGAP		; already seen first record
+	MVI	A,1
+	STA	IHFIRST		; mark first record seen
+	LHLD	IHADDR
+	CALL	FISBADDR	; store base address in descriptor
+	SHLD	IHNEXT		; next expected = first address
+	JMP	FIHSKP		; insert data directly (no gap fill)
+
+FIHGAP:
 	; Data record: check for address gap
 	; If IHADDR > IHNEXT, fill gap with FFH
 	LHLD	IHADDR
@@ -466,6 +487,33 @@ FIONWM:
 FINCAN:
 	; User cancelled filename prompt
 	XRA	A
+	RET
+
+;------------------------------------------------------------
+; FIHEXT - Handle Type 02/04 extended address records.
+; Show error on row 24 and skip the record.
+;------------------------------------------------------------
+FIHEXT:
+	LXI	D,EXTAMSG
+	CALL	STATMSG
+	JMP	FIHLP		; continue with next record
+
+;------------------------------------------------------------
+; FISBADDR - Store HL as base address in BD_BADDR.
+;------------------------------------------------------------
+FISBADDR:
+	PUSH	H		; save base address
+	LHLD	CURBDP
+	MOV	A,L
+	ADI	BD_BADDR
+	MOV	L,A
+	MOV	A,H
+	ACI	0
+	MOV	H,A		; HL -> BD_BADDR
+	POP	D		; DE = base address
+	MOV	M,E
+	INX	H
+	MOV	M,D
 	RET
 
 ;------------------------------------------------------------
@@ -1074,7 +1122,24 @@ FWHRDL:
 	MOV	L,A
 	MOV	A,H
 	SBB	B
-	MOV	H,A		; HL = start address of this record
+	MOV	H,A		; HL = logical start offset
+
+	; Add base address for HEX record address
+	XCHG			; DE = logical offset
+	PUSH	D		; save it
+	LHLD	CURBDP
+	MVI	A,BD_BADDR
+	ADD	L
+	MOV	L,A
+	MVI	A,0
+	ADC	H
+	MOV	H,A
+	MOV	A,M
+	INX	H
+	MOV	H,M
+	MOV	L,A		; HL = BD_BADDR
+	POP	D		; DE = logical offset
+	DAD	D		; HL = base + offset = HEX address
 
 	LXI	D,IHDATA	; DE = data pointer
 	LDA	IHBCNT
@@ -1668,6 +1733,7 @@ NEWMSG:	DB	'New file.$'
 SAVEMSG: DB	'File saved.$'
 ERRMSG:	DB	'Disk error!$'
 FULLMSG: DB	'File too large for buffer!$'
+EXTAMSG: DB	'Ext addr record ignored (>FFFF)$'
 
 ;=============================================================
 ; DATA SEGMENT
@@ -1693,6 +1759,7 @@ IHTYPE:	DB	0		; record type
 IHPTR:	DW	0		; parse pointer into IHLINE
 IHRPOS:	DB	0		; read position in DMABUF
 IHRHAV:	DB	0		; flag: record loaded in DMABUF
+IHFIRST: DB	0		; flag: first data record seen
 
 ; Intel HEX writer state
 IWBCNT:	DB	0		; write record byte count
