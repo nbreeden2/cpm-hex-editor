@@ -1,0 +1,214 @@
+
+                        HEDIT v1.0 User Manual
+                   CP/M 2.2 Hex Editor for the IMSAI 8080
+                   =======================================
+
+
+    1. INTRODUCTION
+
+    HEDIT is a full-screen hex editor for CP/M 2.2 systems with a
+    VT100/ANSI compatible terminal.  It provides hex and ASCII editing
+    of binary files and Intel HEX files with block operations, search,
+    and configurable key bindings.
+
+    Requirements:
+      - CP/M 2.2 or compatible
+      - VT100/ANSI terminal (80x24)
+      - Minimum 9 KB free TPA
+
+
+    2. STARTING HEDIT
+
+    From the CP/M prompt:
+
+      A>HEDIT                    Start with empty buffer
+      A>HEDIT MYFILE.COM         Open MYFILE.COM for editing
+      A>HEDIT B:DATA.HEX         Open Intel HEX file on drive B:
+
+    When started without a filename, the info bar shows [No Name].
+    You will be prompted for a filename when you save.
+
+
+    3. SCREEN LAYOUT
+
+    Row 1:   Info bar - filename, file size, cursor offset, mode flags
+    Row 2:   Column header
+    Row 3-22: Hex data area (20 rows x 16 bytes = 320 bytes visible)
+    Row 23:  Separator line
+    Row 24:  Status/message bar
+
+    Each data row displays:
+
+      XXXX: HH HH HH HH HH HH HH HH  HH HH HH HH HH HH HH HH  ASCII text here.
+
+      XXXX   = hex address (0000-FFFF)
+      HH     = hex byte values
+      ASCII  = printable characters (20h-7Eh), others shown as '.'
+
+    The info bar shows:
+      Filename  Size:XXXX  Off:XXXX  [INS]/[OVR]  [HEX]/[ASC]  [BIN]/[IHEX]
+
+
+    4. EDITING MODES
+
+    HEX mode (default):
+      The cursor is in the hex field.  Type 0-9 and A-F to enter byte
+      values.  Two keystrokes complete one byte (high nibble, then low
+      nibble).  Lowercase a-f are accepted.
+
+    ASCII mode (press Tab to toggle):
+      The cursor moves to the ASCII field.  Type any printable character
+      (space through '~') to enter its byte value directly.
+
+    Insert mode (press Ins or ^V to toggle):
+      New bytes are inserted at the cursor position, shifting existing
+      data to the right.  The info bar shows [INS].
+
+    Overwrite mode (default):
+      Existing bytes are replaced in place.  The info bar shows [OVR].
+
+
+    5. NAVIGATION
+
+    Key              Action
+    ---              ------
+    Up arrow / ^E    Move up 16 bytes (one row)
+    Down arrow / ^X  Move down 16 bytes (one row)
+    Left arrow / ^S  Move left 1 byte
+    Right arrow / ^D Move right 1 byte
+    PgUp / ^R        Move up 320 bytes (one page)
+    PgDn / ^C        Move down 320 bytes (one page)
+    Home / ^QS       Move to start of current row
+    End / ^QD        Move to end of current row
+    ^QR              Move to top of file
+    ^QC              Move to end of file
+
+
+    6. EDITING KEYS
+
+    Key              Action
+    ---              ------
+    0-9, A-F         Hex byte input (HEX mode)
+    Printable char   ASCII byte input (ASCII mode)
+    Tab / ^I         Toggle HEX/ASCII mode
+    Ins / ^V         Toggle Insert/Overwrite mode
+    Backspace / ^H   Delete byte to the left
+    Del / ^G         Delete byte to the right
+    ^Y               Delete row (16 bytes at cursor)
+
+
+    7. BLOCK OPERATIONS
+
+    ^KB or F3        Set block mark (start or end)
+                     First press marks the start.  Move the cursor to
+                     the desired end position.  Selected bytes are shown
+                     in reverse video as you move.  Second press sets
+                     the end of the block.  Third press clears the mark.
+
+    ^KC              Copy marked block to clipboard
+    ^KD              Delete marked block
+    ^KP              Paste clipboard at cursor position
+
+    The clipboard holds up to 2048 bytes.
+
+
+    8. SEARCH
+
+    ^L or F1         Find next (repeats last search)
+    Menu -> Find     Start a new search
+
+    When starting a search:
+      1. Choose (H)ex or (A)SCII mode (press H or A, ESC to cancel)
+      2. Enter the search pattern:
+         - Hex mode: enter byte values like "4D 5A 90" (spaces optional,
+           lowercase accepted and auto-uppercased)
+         - ASCII mode: enter text like "Hello"
+      3. Press Enter to search, ESC to cancel
+
+    The search wraps around if the pattern is not found forward.
+    "Found." or "Not found." is shown on the status bar.
+
+
+    9. FILE OPERATIONS
+
+    ^KS or F2        Save file (quick save)
+    ESC              Open menu
+
+    Save creates a .BAK backup of the previous version before writing.
+
+    File formats:
+      Binary (BIN):   Raw bytes saved directly.
+      Intel HEX:      Standard Intel HEX format with checksums.
+
+    Format is auto-detected on load (files starting with ':' are
+    Intel HEX).  Use Menu -> Toggle Format to change before saving.
+
+
+    10. INTEL HEX FILES
+
+    When loading an Intel HEX file:
+      - The base address from the first data record is preserved
+      - The gutter and info bar show the actual HEX addresses
+      - Address gaps between records are filled with FFh bytes
+      - Type 02/04 extended address records are not supported
+        (an error is shown and they are skipped)
+
+    When saving as Intel HEX:
+      - Data records use 16-byte lines with correct checksums
+      - The base address is included in record addresses
+      - An EOF record is appended
+
+    To set the base address manually:
+      Menu -> Base Offset -> enter high byte (00-FF)
+      This sets the starting address to XX00h.
+
+
+    11. ESC MENU
+
+    Press ESC or F4 to open the menu.  Navigate with:
+      - Arrow keys (Up/Down) and Enter to select
+      - Number keys 1-9 for direct selection
+      - Shortcut letter (shown in bold)
+
+    Menu items:
+      1. [O]pen File         Open a new file
+      2. [S]ave File         Save current file
+      3. Save [A]s...        Save with a new filename
+      4. [F]ind              Search for hex bytes or ASCII text
+      5. [G]o To Offset      Jump to a hex address
+      6. [H]elp / About      Show key reference and version
+      7. [B]ase Offset       Set Intel HEX base address
+      8. [T]oggle Format     Switch between Binary and Intel HEX
+      9. E[x]it              Exit (prompts to save if modified)
+
+    Press ESC or Q to close the menu without selecting.
+
+
+    12. EXITING
+
+    ESC -> Exit (or press 9 or X in the menu)
+
+    If the buffer has been modified, HEDIT asks:
+      "Save changes? (Y/N/Esc)"
+      Y = save and exit (prompts for filename if unnamed)
+      N = discard changes and exit
+      Esc = cancel, return to editor
+
+
+    13. KEY BINDING FILE (HEDIT.KEY)
+
+    HEDIT supports customizable key bindings through an optional
+    HEDIT.KEY file.  If present on the current drive, it is read
+    at startup and used to remap control keys and escape sequences
+    to editor actions.
+
+
+    14. LIMITATIONS
+
+    - Maximum file size is limited by available TPA memory
+    - Addresses are 16-bit (0000h-FFFFh)
+    - Intel HEX extended address records (Type 02/04) are not supported
+    - Clipboard maximum is 2048 bytes
+    - Search pattern maximum is 64 bytes
+    - Terminal must be VT100/ANSI compatible (80 columns, 24 rows)
+

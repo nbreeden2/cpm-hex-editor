@@ -1,0 +1,356 @@
+
+                     HEDIT v1.0 Technical Reference
+                   CP/M 2.2 Hex Editor for the IMSAI 8080
+                   =======================================
+
+
+    1. PROJECT OVERVIEW
+
+    HEDIT is a full-screen hex editor written in Intel 8080 assembly
+    language for CP/M 2.2.  It uses a gap buffer data structure for
+    efficient insertion and deletion, VT100/ANSI escape sequences for
+    screen rendering, and supports both raw binary and Intel HEX file
+    formats.
+
+    Target platform:  IMSAI 8080 with CP/M 2.2
+    CPU:              Intel 8080 (no Z80 instructions)
+    Terminal:         VT100/ANSI compatible, 80x24
+    Assembler:        Microsoft M80 (Macro-80)
+    Linker:           Microsoft L80
+
+
+    2. SOURCE FILES
+
+    The project consists of 11 assembly modules, one include file,
+    and a preprocessing script.
+
+    Source Modules (link order):
+    ---------------------------------------------------------------
+    File          Purpose                    Key Exports
+    ---------------------------------------------------------------
+    HEDIT.MAC     Entry point, main loop,    INSMODE, DIRTY, DRTLINE,
+                  action dispatch            CURBDP, TPATOP, DOEXIT,
+                                             EDITMODE, NIBBLE
+
+    HEXSCR.MAC    Terminal I/O, screen       SCRINIT, SCRDRAW, SCREDCL,
+                  rendering, info bar,       INFOBAR, CURPOS, STATMSG,
+                  cursor positioning         OUTSTR, OUTCHAR, CURGOTO,
+                                             OUTN4HX, OUTN2HX, ISLOAD
+
+    HEXKEY.MAC    Key input, VT100 ESC       GETKEY, KBDTBL, CSITBL,
+                  sequence decoder           SS3TBL, CTKTBL, CTQTBL
+
+    HEXGAP.MAC    Gap buffer engine          GBINIT, GBINSRT, GBDLFT,
+                  (byte-level operations)    GBDELRT, GBMVLT, GBMVRT,
+                                             GBMVTP, GBMVEND, GBMVTO,
+                                             GBRDBLK, GBLOGRD, GBTXEND,
+                                             GBCSOFF, GBGAPBG, GBGAPEN
+
+    HEXIO.MAC     File load/save, Intel      FIOPEN, FISAVE, FIPROMPT,
+                  HEX parser/writer          FISAVFN, FISMOD, WRKFCB
+
+    HEXMENU.MAC   ESC menu overlay           MNUSHOW
+
+    HEXSRCH.MAC   Hex and ASCII search       SRFIND, SRFNDNX
+
+    HEXBLK.MAC    Block mark, copy,          BLMARK, BLCOPY, BLDEL,
+                  delete, paste              BLPASTE
+
+    HEXKBND.MAC   Key binding init from      KBINIT
+                  HEDIT.KEY config file
+
+    HEXVIRT.MAC   Virtual buffer I/O         VIMODE, VISAVALL, VIGOTO
+                  for large files
+
+    HEXHELP.MAC   Help screen overlay        HLPSHOW, BMDATEND
+    ---------------------------------------------------------------
+
+    IMPORTANT: HEXHELP.MAC must be linked LAST because BMDATEND marks
+    the end of all static code and data.  The gap buffer is allocated
+    from BMDATEND to the top of TPA.
+
+    Other Files:
+      HEDIT.INC    Shared equates (included by all .MAC files)
+      CPMFMT.PY    Python preprocessor (inlines includes, normalizes
+                   CR+LF line endings, appends Ctrl-Z EOF marker)
+      CLAUDE.md    Project rules and conventions
+
+
+    3. BUILD PROCESS
+
+    Step 1: Preprocess all source files
+
+      python CPMFMT.PY
+
+    This inlines HEDIT.INC into each .MAC file, normalizes line
+    endings to CR+LF, and appends a Ctrl-Z EOF marker.  This is
+    required because M80 terminates input on Ctrl-Z in included
+    files.
+
+    To preprocess specific files only:
+
+      python CPMFMT.PY HEDIT.MAC HEXSCR.MAC
+
+    Step 2: Assemble each module
+
+      M80 =HEDIT
+      M80 =HEXSCR
+      M80 =HEXKEY
+      M80 =HEXGAP
+      M80 =HEXIO
+      M80 =HEXMENU
+      M80 =HEXSRCH
+      M80 =HEXBLK
+      M80 =HEXKBND
+      M80 =HEXVIRT
+      M80 =HEXHELP
+
+    Each produces a .REL relocatable object file.
+
+    Step 3: Link
+
+      L80 HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
+
+    The /N flag suppresses the symbol table listing.
+    The /E flag specifies the output .COM filename (HEDIT.COM).
+
+    IMPORTANT: After every .MAC file edit, run CPMFMT.PY on the
+    modified file(s) before assembling.
+
+
+    4. MEMORY MAP
+
+      0000h         CP/M warm boot vector
+      0005h         BDOS entry point
+      005Ch         Default FCB (command line filename)
+      0080h         Command tail / DMA buffer
+      0100h         TPA start - HEDIT.COM loads here
+      ....          Code and data segments (CSEG then DSEG)
+      BMDATEND      End of static data (defined in HEXHELP.MAC)
+      BMDATEND..    Gap buffer (all remaining TPA memory)
+      ..BDOS-1      Top of gap buffer
+      BDOS          BDOS handler
+
+    Minimum TPA required: 9 KB (MINMEM = 9*1024)
+
+
+    5. GAP BUFFER ARCHITECTURE
+
+    HEDIT uses a gap buffer for the edit data.  The buffer occupies
+    all free memory from BMDATEND to the top of TPA.
+
+      Memory layout:
+        [R1: pre-gap data] [---GAP---] [R2: post-gap data]
+        base               GAPBG       GAPEN               base+BSIZE
+
+    The cursor position is always at the gap boundary.  Inserting a
+    byte writes it at GAPBG and advances GAPBG.  Deleting removes a
+    byte by moving the gap boundary.
+
+    Moving the cursor bulk-copies bytes across the gap:
+      - Move right: copy bytes from R2 start to R1 end (forward copy)
+      - Move left: copy bytes from R1 end to R2 start (backward copy)
+
+    The gap buffer is purely byte-oriented -- no line delimiters,
+    no LF counting.  Navigation is by byte offset:
+      - Left/right: +/- 1 byte
+      - Up/down: +/- 16 bytes
+      - Page: +/- 320 bytes
+
+
+    6. BUFFER DESCRIPTOR
+
+    Each buffer is described by a 34-byte descriptor (BD_SIZE = 34):
+
+      Offset  Size  Field       Description
+      ------  ----  ----------  ----------------------------------
+       0      2     BD_BSTAR    Buffer base address in RAM
+       2      2     BD_BSIZE    Buffer capacity in bytes
+       4      2     BD_GAPBG    Gap start offset (relative to base)
+       6      2     BD_GAPEN    Gap end offset (relative to base)
+       8      2     BD_TXEND    Logical data length (R1 + R2 size)
+      10      2     BD_TOPOFF   Top visible byte offset (aligned to 16)
+      12      2     BD_CSOFF    Cursor byte offset
+      14      2     BD_MRKBG    Block mark start (FFFFh = unset)
+      16      2     BD_MRKEN    Block mark end (FFFFh = unset)
+      18      1     BD_MODIF    Modified flag (0 = clean, 1 = dirty)
+      19      1     BD_FILEFMT  File format (0 = binary, 1 = Intel HEX)
+      20      12    BD_FNAME    Drive (1) + filename (8) + extension (3)
+      32      2     BD_BADDR    Base address for Intel HEX files
+
+    CURBDP is a global pointer to the active buffer descriptor.
+
+
+    7. SCREEN LAYOUT
+
+    The display is organized as follows (80x24 VT100 terminal):
+
+      Row  1: Info bar (filename, size, offset, mode flags)
+      Row  2: Column header (dim text)
+      Row  3-22: Hex data area (20 rows, 16 bytes each, 320 bytes)
+      Row 23: Separator line (80 '=' characters)
+      Row 24: Status/message bar
+
+    Data row format (72 visible characters):
+      Col  1-4:   Hex address (4 digits, 0000-FFFF)
+      Col  5-6:   ": " separator
+      Col  7-30:  First 8 hex bytes ("XX XX XX XX XX XX XX XX")
+      Col 31:     Group separator space
+      Col 32-55:  Second 8 hex bytes ("XX XX XX XX XX XX XX XX")
+      Col 56-57:  Gap (2 spaces)
+      Col 58-73:  16 ASCII characters (20h-7Eh shown, else '.')
+
+    Color scheme (VT100 SGR codes):
+      Address field:  Bold green
+      Hex bytes:      Cyan
+      ASCII field:    Yellow
+      Column header:  Dim
+      Separator:      Dim
+      Info bar:       Reverse video
+      Block marks:    Reverse video
+
+
+    8. SELECTIVE REDRAW SYSTEM
+
+    The main loop uses a two-level dirty flag system:
+
+      DIRTY    DRTLINE   Action
+      -----    -------   ------
+        1        *        SCRDRAW: full 20-row redraw + header + separator
+        0        1        SCREDCL: current row only
+        0        0        No content redraw (cursor-only move)
+
+    INFOBAR and CURPOS always run at MLDONE regardless of flags.
+
+    During block marking (MRKBG set, MRKEN = FFFFh), DIRTY is forced
+    to 1 on every main loop iteration so the live highlight preview
+    tracks the cursor.
+
+    Block mark highlighting is optimized: per-row highlight boundaries
+    (SHHLS, SHHLE) are precomputed by SHHLRNG, and SGR attribute
+    changes are emitted only at transition points, not per byte.
+
+
+    9. KEY INPUT SYSTEM
+
+    HEXKEY.MAC implements a state-machine VT100 key decoder:
+
+      State       Description
+      ---------   --------------------------------
+      KST_IDL     Idle, no prefix received
+      KST_ESC     Received ESC (0x1B)
+      KST_CSI     Received ESC [ (CSI sequence)
+      KST_SS3     Received ESC O (SS3 sequence)
+      KST_CSP     CSI with parameter digits
+      KST_CTK     Ctrl-K prefix active
+      KST_CTQ     Ctrl-Q prefix active
+
+    GETKEY returns:
+      B = key type (KT_NONE, KT_ACT, or KT_CHAR)
+      C = action code or character value
+
+    Key dispatch tables:
+      KBDTBL   Ctrl codes 0-31 -> action codes (32 bytes)
+      CSITBL   CSI sequences: (final_byte, param, action) triples
+      SS3TBL   SS3 sequences: (final_byte, action) pairs
+      CTKTBL   Ctrl-K prefix: (char, action) pairs
+      CTQTBL   Ctrl-Q prefix: (char, action) pairs
+
+
+    10. FILE I/O
+
+    Binary files:
+      Load: read 128-byte records via BF_FREAD, insert each byte via
+            GBINSRT, stop at CP/M EOF (1Ah) or read error.
+      Save: read logical bytes via GBLOGRD, write 128-byte records
+            via BF_FWRITE, pad final record with zeros.
+
+    Intel HEX files:
+      Load: auto-detected when first byte is ':' (3Ah).  Parsed
+            record by record via IHRDLN/IHPARS.  Base address is
+            saved from the first data record (no 0xFF pre-padding).
+            Address gaps between records are filled with FFh bytes.
+            Type 02/04 extended address records show an error and
+            are skipped.
+      Save: 16-byte data records with checksums.  Record addresses
+            include the base address (BD_BADDR).  Terminated with
+            an EOF record (:00000001FF).
+
+    Save creates a .BAK backup by renaming the existing file before
+    writing the new version.
+
+
+    11. SEARCH ENGINE
+
+    HEXSRCH.MAC provides forward search with wrap-around.
+
+    Two search types:
+      Hex:   space-separated hex byte pairs ("4D 5A 90 00")
+      ASCII: literal text string
+
+    Search algorithm:
+      1. Start at CSOFF + 1 (one past cursor)
+      2. At each position, try matching SRCHBUF[0..SRCHLEN-1]
+         against logical data via GBLOGRD
+      3. If end of data reached, wrap to offset 0
+      4. Stop when match found or full circle completed
+
+    Maximum search pattern: 64 bytes (SRCHMAX).
+
+
+    12. BLOCK OPERATIONS
+
+    Block marks use BD_MRKBG and BD_MRKEN in the buffer descriptor.
+    Both are FFFFh when no mark is active.
+
+    Mark state machine:
+      Both FFFFh          -> Set MRKBG = cursor, MRKEN = FFFFh
+      MRKBG set, MRKEN=FF -> Set MRKEN = cursor (swap if needed)
+      Both set            -> Clear both to FFFFh
+
+    Copy: reads bytes MRKBG through MRKEN (inclusive) into CLPBUF
+          via GBLOGRD.  Maximum clipboard size: 2048 bytes (CLIPMAX).
+
+    Delete: moves cursor to MRKBG, calls GBDELRT for
+            (MRKEN - MRKBG + 1) bytes.
+
+    Paste: inserts CLPLEN bytes from CLPBUF at cursor via GBINSRT.
+
+
+    13. CODING CONVENTIONS
+
+    - Intel 8080 assembly ONLY.  No Z80 instructions (no EX, DJNZ,
+      JR, IX/IY, etc.)
+    - BDOS calls clobber ALL registers.  Any value needed across a
+      CALL BDOS must be saved to memory or stack.
+    - M80 truncates symbols to 6 characters.  Avoid symbols that
+      differ only after the 6th character.
+    - After every .MAC file edit, run: python CPMFMT.PY <file>
+    - CSEG for code and read-only data; DSEG for mutable variables.
+
+
+    14. DEPENDENCIES BETWEEN MODULES
+
+    HEDIT.MAC     imports from all other modules
+    HEXSCR.MAC    imports CURBDP, DIRTY, INSMODE, EDITMODE, NIBBLE,
+                  GBRDBLK, GBTXEND, GBCSOFF
+    HEXKEY.MAC    standalone (no imports except HEDIT.INC constants)
+    HEXGAP.MAC    imports CURBDP
+    HEXIO.MAC     imports CURBDP, ISLOAD, GBINIT, GBINSRT, GBMVTP,
+                  GBTXEND, GBBASE, GBBSIZ, GBGAPBG, GBGAPEN, GBLOGRD,
+                  STATMSG, OUTSTR, OUTCHAR, CURGOTO, INFOBAR
+    HEXMENU.MAC   imports GETKEY, CURBDP, DIRTY, INSMODE, EDITMODE,
+                  FIOPEN, FISAVE, FIPROMPT, FISAVFN, FISMOD, STATMSG,
+                  OUTSTR, OUTCHAR, CURGOTO, INFOBAR, SCRDRAW,
+                  GBMVTO, GBTXEND, GBCSOFF, SRFIND, HLPSHOW, DOEXIT
+    HEXSRCH.MAC   imports CURBDP, DIRTY, GBLOGRD, GBTXEND, GBCSOFF,
+                  GBMVTO, STATMSG, STATCLR, OUTSTR, OUTCHAR, CURGOTO
+    HEXBLK.MAC    imports CURBDP, DIRTY, GBINSRT, GBDLFT, GBDELRT,
+                  GBMVTO, GBCSOFF, GBLOGRD, GBTXEND, STATMSG
+    HEXKBND.MAC   imports KBDTBL, CSITBL, SS3TBL, CTKTBL, CTQTBL,
+                  STATMSG, OUTSTR
+    HEXVIRT.MAC   imports CURBDP, DIRTY, GBINIT, GBMVTP, GBBASE,
+                  GBBSIZ, GBGAPEN, GBCSOFF, GBLOGRD, GBTXEND,
+                  SCRDRAW, INFOBAR, CURPOS, STATMSG, WRKFCB
+    HEXHELP.MAC   imports OUTSTR, OUTCHAR, CURGOTO, DIRTY
+
