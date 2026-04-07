@@ -172,7 +172,7 @@ MAXADDR EQU     0FFFFH      ; max displayable address
 	EXTRN	ISLOAD		; loading flag (for info bar)
 	EXTRN	GBINIT		; initialise gap buffer
 	EXTRN	GBINSRT		; insert char into buffer
-	EXTRN	GBMVTOP		; move cursor to file top
+	EXTRN	GBMVTP		; move cursor to file top
 	EXTRN	GBTXEND		; get text end -> HL
 	EXTRN	GBBASE		; get buffer base -> DE
 	EXTRN	GBBSIZ		; get buffer size -> DE
@@ -191,6 +191,7 @@ MAXADDR EQU     0FFFFH      ; max displayable address
 	PUBLIC	FIPROMPT	; prompt for filename
 	PUBLIC	FISAVFN		; copy WRKFCB name to BD_FNAME
 	PUBLIC	FISMOD		; read BD_MODIF flag
+	PUBLIC	WRKFCB		; working FCB
 
 ;=============================================================
 ; FIOPEN - Open a file and load it into the current buffer.
@@ -325,27 +326,14 @@ FIIHEX:
 	LXI	H,0
 	SHLD	IHNEXT		; next expected address = 0
 
-	; We already have the first record in DMABUF.
-	; Reset FCB to re-read from start.
-	; Close and re-open file.
-	LXI	D,CMDTAIL
-	MVI	C,BF_SETDMA
-	CALL	BDOS
-	LXI	D,WRKFCB
-	MVI	C,BF_FCLOSE
-	CALL	BDOS
-	CALL	FIRCB0
-	LXI	D,CMDTAIL
-	MVI	C,BF_SETDMA
-	CALL	BDOS
-	LXI	D,WRKFCB
-	MVI	C,BF_FOPEN
-	CALL	BDOS
-
-	; Initialise record read state
+	; First record already in DMABUF from format detection.
+	; Reset CR to 1 so next BF_FREAD gets record 1.
+	; Tell IHRDBYT that record 0 is already loaded.
 	XRA	A
-	STA	IHRPOS		; position in DMA = 0
-	STA	IHRHAV		; no record loaded yet
+	STA	IHRPOS		; start reading at DMABUF[0]
+	MVI	A,1
+	STA	IHRHAV		; record already loaded
+	STA	WRKFCB+FCB_CR	; CR=1 (next read gets record 1)
 
 FIHLP:
 	; Read one Intel HEX line
@@ -455,7 +443,7 @@ FIONEW:
 	; New or loaded: move cursor to top, clear modified
 	XRA	A
 	STA	ISLOAD
-	CALL	GBMVTOP
+	CALL	GBMVTP
 	CALL	FICLRMOD
 	; Check if file was new (TXEND = 0 means new)
 	CALL	GBTXEND
@@ -598,17 +586,21 @@ IHRDNW:
 
 IHRDGT:
 	; Return byte at DMABUF[IHRPOS]
+	; Must preserve HL (caller uses it)
+	PUSH	H
 	LDA	IHRPOS
 	MOV	E,A
 	MVI	D,0
 	LXI	H,DMABUF
 	DAD	D		; HL = &DMABUF[pos]
 	MOV	A,M		; A = byte
+	MOV	C,A		; save byte in C
 	; Increment position
 	LDA	IHRPOS
 	INR	A
 	STA	IHRPOS
-	MOV	A,M		; reload the byte
+	POP	H		; restore caller's HL
+	MOV	A,C		; A = byte
 	ORA	A		; clear CY
 	RET
 
@@ -901,19 +893,18 @@ FIWRITE:
 
 FWLOP:
 	; Read next logical byte
-	LHLD	FWOFF
-	XCHG			; DE = offset
+	LHLD	FWOFF		; HL = logical offset
 	CALL	GBLOGRD		; A = byte, CY = past end
 	JC	FWDONE		; past end of data
 
 	; Store byte in DMABUF
-	PUSH	A		; save byte
+	PUSH	PSW		; save A (and flags)
 	LDA	FWDPOS
 	MOV	E,A
 	MVI	D,0
 	LXI	H,DMABUF
 	DAD	D		; HL = &DMABUF[pos]
-	POP	A		; restore byte
+    	POP	PSW		; restore A (and flags)
 	MOV	M,A
 
 	; Advance offset
@@ -1051,10 +1042,8 @@ FWHLEN:
 FWHRDL:
 	PUSH	H
 	PUSH	B
-	LHLD	FWOFF
-	XCHG			; DE = offset for GBLOGRD
-	CALL	GBLOGRD		; A = byte
-	; (CY shouldn't happen since we checked remaining)
+	LHLD	FWOFF		; HL = logical offset
+	CALL	GBLOGRD		; A = byte (Z if past end)
 	POP	B
 	POP	H
 	MOV	M,A
@@ -1210,7 +1199,7 @@ IHCSADD:
 ; IHWRHX - Write byte in A as 2 hex ASCII chars to output.
 ;------------------------------------------------------------
 IHWRHX:
-	PUSH	A		; save byte
+	PUSH	PSW		; save A (and flags)
 	; High nibble first
 	RRC
 	RRC
@@ -1218,7 +1207,7 @@ IHWRHX:
 	RRC
 	ANI	0FH
 	CALL	IHWRNB		; write nibble
-	POP	A		; restore byte
+    	POP	PSW		; restore A (and flags)
 	; Low nibble
 	ANI	0FH
 	CALL	IHWRNB

@@ -190,7 +190,7 @@ MAXADDR EQU     0FFFFH      ; max displayable address
         EXTRN   GBDELRT         ; delete right
         EXTRN   GBMVLT          ; cursor left one byte
         EXTRN   GBMVRT          ; cursor right one byte
-        EXTRN   GBMVTOP         ; cursor to start of buffer
+        EXTRN   GBMVTP          ; cursor to start of buffer
         EXTRN   GBMVEND         ; cursor to end of buffer
         EXTRN   GBMVTO          ; cursor to offset in DE
         EXTRN   GBRDBLK         ; read block of bytes
@@ -275,20 +275,26 @@ START:
         JC      MEMFAIL         ; equal high, low byte less
 BMOK1:
         ; BC = buffer size, DE = base address (BMDATEND)
-        LXI     H,BDESC0        ; HL = descriptor
-        CALL    GBINIT
 
-        ; Set CURBDP
-        LXI     H,BDESC0
-        SHLD    CURBDP
-
-        ; Clear buffer descriptor (BD_SIZE bytes)
+        ; Clear buffer descriptor before GBINIT fills it
+        PUSH    B               ; save buffer size
+        PUSH    D               ; save base address
         LXI     H,BDESC0
         MVI     B,BD_SIZE
 BDCLR:  MVI     M,0
         INX     H
         DCR     B
         JNZ     BDCLR
+        POP     D               ; restore base
+        POP     B               ; restore size
+
+        ; Init gap buffer (writes BD_BSTAR, BD_BSIZE, etc.)
+        LXI     H,BDESC0        ; HL = descriptor
+        CALL    GBINIT
+
+        ; Set CURBDP
+        LXI     H,BDESC0
+        SHLD    CURBDP
 
         ; Set block marks to FFFFH (unset)
         LXI     H,BDESC0+BD_MRKBG
@@ -464,9 +470,12 @@ DCNLO:  ; Low nibble: combine with saved high nibble
         PUSH    B
         CALL    GBDELRT         ; delete byte at cursor
         POP     B
+        MOV     A,C             ; A = byte value
+        CALL    GBINSRT         ; insert byte
+        JMP     MLDRTL          ; overwrite: redraw current row
 DCHINS: MOV     A,C             ; A = byte value
         CALL    GBINSRT         ; insert byte
-        JMP     MLDRTL          ; redraw current row
+        JMP     MLDIRT          ; insert: full redraw (shifts all rows)
 
 DCASC:  ;--- ASCII MODE: accept 20H-7EH ---
         MOV     A,C
@@ -490,10 +499,14 @@ DCASC:  ;--- ASCII MODE: accept 20H-7EH ---
         SBB     D
         JNC     DCAINS          ; at/past end: just insert
         CALL    GBDELRT         ; delete byte at cursor
+        POP     B               ; restore char in C
+        MOV     A,C
+        CALL    GBINSRT         ; insert byte
+        JMP     MLDRTL          ; overwrite: redraw current row
 DCAINS: POP     B               ; restore char in C
         MOV     A,C
         CALL    GBINSRT         ; insert byte
-        JMP     MLDRTL          ; redraw current row
+        JMP     MLDIRT          ; insert: full redraw
 
 DCBELL: ; Invalid character: sound bell
         MVI     E,BEL
@@ -527,7 +540,8 @@ CUUOK:  ; Target = CSOFF - 16
         MOV     A,H
         SBB     D
         MOV     D,A             ; DE = CSOFF - 16
-        CALL    GBMVTO          ; move cursor to DE
+        XCHG                    ; HL = target
+        CALL    GBMVTO          ; move cursor to HL
         CALL    CHKSCRL         ; auto-scroll if needed
         JMP     MAINLP
 
@@ -557,7 +571,8 @@ DO_CUD:
 CDOK:   ; Target = CSOFF + 16
         MOV     D,B
         MOV     E,C             ; DE = CSOFF + 16
-        CALL    GBMVTO          ; move cursor to DE
+        XCHG                    ; HL = target
+        CALL    GBMVTO          ; move cursor to HL
         CALL    CHKSCRL         ; auto-scroll if needed
         JMP     MAINLP
 
@@ -592,7 +607,8 @@ DO_PGU:
         MOV     D,A             ; DE = CSOFF - BYTESPG
         JNC     PGUSET          ; no underflow
         LXI     D,0             ; clamp to 0
-PGUSET: CALL    GBMVTO
+PGUSET: XCHG                    ; HL = target
+        CALL    GBMVTO
         ; Adjust TOPOFF: subtract BYTESPG, clamp to 0
         MVI     A,BD_TOPOFF
         CALL    BDFLD           ; HL -> BD_TOPOFF
@@ -638,11 +654,12 @@ DO_PGD:
         CMP     E
         JC      PGDOK           ; HL < TXEND
         JZ      PGDOK           ; HL == TXEND
-PGDCLM: POP     D               ; DE = TXEND (clamped target)
-        PUSH    D
-PGDOK:  XCHG                    ; DE = target offset
+PGDCLM: POP     H               ; HL = TXEND (clamped target)
+        JMP     PGDGO
+PGDOK:  XCHG                    ; DE = target, save it
         POP     H               ; discard saved TXEND
-        CALL    GBMVTO
+        XCHG                    ; HL = target
+PGDGO:  CALL    GBMVTO
         ; Adjust TOPOFF: add BYTESPG
         MVI     A,BD_TOPOFF
         CALL    BDFLD           ; HL -> BD_TOPOFF
@@ -669,8 +686,7 @@ DO_HOM:
         ; Target = CSOFF AND FFF0H (align to 16)
         MOV     A,L
         ANI     0F0H
-        MOV     E,A
-        MOV     D,H             ; DE = CSOFF & FFF0H
+        MOV     L,A             ; HL = CSOFF & FFF0H
         CALL    GBMVTO
         JMP     MAINLP
 
@@ -696,17 +712,17 @@ DO_END:
         CMP     L
         JC      ENDOK           ; DE < TXEND
         JZ      ENDOK           ; DE == TXEND
-ENDCLM: ; Clamp to TXEND
-        MOV     D,H
-        MOV     E,L             ; DE = TXEND
-ENDOK:  CALL    GBMVTO
+ENDCLM: ; Clamp to TXEND (HL already = TXEND)
+        JMP     ENDGO
+ENDOK:  XCHG                    ; HL = target (was in DE)
+ENDGO:  CALL    GBMVTO
         JMP     MAINLP
 
 ;--- Navigation: top of file ---
 DO_FTP:
         XRA     A
         STA     NIBBLE          ; reset nibble state
-        CALL    GBMVTOP         ; cursor to offset 0
+        CALL    GBMVTP         ; cursor to offset 0
         ; Set TOPOFF = 0
         MVI     A,BD_TOPOFF
         CALL    BDFLD           ; HL -> BD_TOPOFF

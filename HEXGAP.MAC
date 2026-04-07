@@ -188,7 +188,7 @@ MAXADDR EQU     0FFFFH      ; max displayable address
         PUBLIC  GBDELRT         ; delete byte right
         PUBLIC  GBMVLT          ; cursor left one byte
         PUBLIC  GBMVRT          ; cursor right one byte
-        PUBLIC  GBMVTOP         ; cursor to offset 0
+        PUBLIC  GBMVTP          ; cursor to offset 0
         PUBLIC  GBMVEND         ; cursor to end of data
         PUBLIC  GBMVTO          ; cursor to arbitrary offset
         PUBLIC  GBRDBLK         ; read block for display
@@ -535,13 +535,13 @@ GBMRER:
         RET
 
 ;=============================================================
-; GBMVTOP - Move cursor to offset 0.
+; GBMVTP - Move cursor to offset 0.
 ; Bulk copy: copies entire R1 (pre-gap) to end of gap
 ; using backward copy (dest > src, safe).
 ; Entry:  (none)
 ; Exit:   CSOFF=0, GAPBG=0; all regs clobbered
 ;=============================================================
-GBMVTOP:
+GBMVTP:
         CALL    GBGAPBG
         MOV     A,H
         ORA     L
@@ -702,10 +702,12 @@ GMTOK:
         ; DE - HL = target - CSOFF
         MOV     A,E
         SUB     L
+        MOV     C,A             ; C = low byte of difference
         MOV     A,D
-        SBB     H
-        JZ      GMTDNE          ; target == CSOFF, done
+        SBB     H               ; A = high byte of difference
         JC      GMTLFT          ; target < CSOFF, move left
+        ORA     C               ; combine high and low bytes
+        JZ      GMTDNE          ; both zero: target == CSOFF
 
         ; --- Move right: target > CSOFF ---
         ; N = target - CSOFF
@@ -889,9 +891,11 @@ GBRDBLK:
         LHLD    GRBCNT          ; HL = requested
         MOV     A,L
         SUB     C
+        MOV     D,A             ; D = low byte of difference
         MOV     A,H
-        SBB     B               ; requested - remaining
+        SBB     B               ; A = high byte of difference
         JC      GRBOK           ; requested < remaining, keep count
+        ORA     D               ; check full 16-bit result
         JZ      GRBOK           ; requested == remaining, keep count
         ; Clamp: count = remaining
         MOV     H,B
@@ -931,9 +935,11 @@ GRBOK:
         LHLD    GRBGBG          ; HL = GAPBG
         MOV     A,E
         SUB     L
+        MOV     C,A             ; C = low byte of difference
         MOV     A,D
-        SBB     H               ; (offset+count) - GAPBG
+        SBB     H               ; A = high byte of difference
         JC      GRBR1           ; offset+count < GAPBG: all in R1
+        ORA     C               ; check full 16-bit result
         JZ      GRBR1           ; offset+count == GAPBG: all in R1
 
         ; --- Straddling the gap ---
@@ -955,8 +961,9 @@ GRBOK:
         LHLD    GRBOFF          ; HL = offset
         DAD     D               ; HL = base + offset = src
         ; Dest
-        LHLD    GRBDST
-        XCHG                    ; DE = dest
+        XCHG                    ; DE = src
+        LHLD    GRBDST          ; HL = dest
+        XCHG                    ; DE = dest, HL = src
         POP     B               ; BC = n1
         ; Copy n1 bytes forward
 GRBS1L: MOV     A,M
@@ -1005,8 +1012,9 @@ GRBS1L: MOV     A,M
         XCHG                    ; DE = base
         CALL    GBGAPEN         ; HL = GAPEN
         DAD     D               ; HL = base + GAPEN = src
-        LHLD    GRBDST
-        XCHG                    ; DE = dest
+        XCHG                    ; DE = src
+        LHLD    GRBDST          ; HL = dest
+        XCHG                    ; DE = dest, HL = src
         ; Copy n2 bytes forward
 GRBS2L: MOV     A,M
         STAX    D
@@ -1020,15 +1028,16 @@ GRBS2L: MOV     A,M
 
 GRBR1:
         ; Entire read in R1: physical addr = base + offset
+        LHLD    GRBCNT
+        MOV     B,H
+        MOV     C,L             ; BC = count
         LHLD    GRBBAS
         XCHG                    ; DE = base
         LHLD    GRBOFF          ; HL = offset
         DAD     D               ; HL = base + offset = src
-        LHLD    GRBDST
-        XCHG                    ; DE = dest
-        LHLD    GRBCNT
-        MOV     B,H
-        MOV     C,L             ; BC = count
+        XCHG                    ; DE = src
+        LHLD    GRBDST          ; HL = dest
+        XCHG                    ; DE = dest, HL = src
         ; Copy BC bytes
 GRR1LP: MOV     A,M
         STAX    D
@@ -1042,6 +1051,9 @@ GRR1LP: MOV     A,M
 
 GRBR2:
         ; Entire read in R2: physical = base + offset + gapsize
+        LHLD    GRBCNT
+        MOV     B,H
+        MOV     C,L             ; BC = count
         LHLD    GRBOFF          ; HL = logical offset
         XCHG                    ; DE = offset
         LHLD    GRBGSZ          ; HL = gap size
@@ -1049,11 +1061,9 @@ GRBR2:
         XCHG                    ; DE = physical offset
         LHLD    GRBBAS          ; HL = base
         DAD     D               ; HL = base + offset + gapsize = src
-        LHLD    GRBDST
-        XCHG                    ; DE = dest
-        LHLD    GRBCNT
-        MOV     B,H
-        MOV     C,L             ; BC = count
+        XCHG                    ; DE = src
+        LHLD    GRBDST          ; HL = dest
+        XCHG                    ; DE = dest, HL = src
         ; Copy BC bytes
 GRR2LP: MOV     A,M
         STAX    D
@@ -1079,7 +1089,8 @@ GRBDONE:
 ;=============================================================
 ; GBLOGRD - Read single byte at logical offset HL.
 ; Entry:  HL = logical offset (0-based)
-; Exit:   A = byte value; Z flag set if past end
+; Exit:   A = byte value; CY set if past end (A undefined)
+;         CY clear if byte read ok (A = byte)
 ;         HL preserved
 ;         Does NOT move the cursor.
 ;=============================================================
@@ -1142,13 +1153,13 @@ GBLRDI:
         MOV     A,M
         MOV     B,A             ; save byte
         LHLD    GBLOFF          ; restore caller's HL
-        MOV     A,B             ; A = byte
-        ORI     1               ; force NZ (byte exists)
+        MOV     A,B             ; A = byte value
+        ORA     A               ; CY=0 (byte found ok)
         RET
 
 GBLRZ:
         LHLD    GBLOFF          ; restore caller's HL
-        XRA     A               ; A=0, Z=1 (past end)
+        STC                     ; CY=1 (past end)
         RET
 
 ;=============================================================
@@ -1345,7 +1356,7 @@ GBSETMOD:
 GBTMP:  DB      0               ; last inserted/deleted byte
 GBLOFF: DW      0               ; GBLOGRD: saved logical offset
 
-; Bulk copy working variables (GBMVTOP, GBMVEND, GBMVTO)
+; Bulk copy working variables (GBMVTP, GBMVEND, GBMVTO)
 GBKBAS: DW      0               ; buffer base address
 GBKCNT: DW      0               ; byte count for bulk copy
 

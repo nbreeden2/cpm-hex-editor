@@ -223,7 +223,8 @@ SRTWT:  MVI     E,0FFH
 
 SRTHEX: MVI     A,0
         STA     SRCHTYP         ; type = hex
-        ; Prompt for hex bytes
+        ; Clear status line, then prompt for hex bytes
+        CALL    STATCLR
         MVI     B,STATROW
         MVI     C,1
         CALL    CURGOTO
@@ -233,18 +234,89 @@ SRTHEX: MVI     A,0
 
 SRTASC: MVI     A,1
         STA     SRCHTYP         ; type = ASCII
-        ; Prompt for ASCII text
+        ; Clear status line, then prompt for ASCII text
+        CALL    STATCLR
         MVI     B,STATROW
         MVI     C,1
         CALL    CURGOTO
         LXI     D,SRASPMT
         CALL    OUTSTR
 
-SRREAD: ; Read input line
-        LXI     D,SRINBUF
-        MVI     C,BF_RDLINE
-        CALL    BDOS
-        LDA     SRINBUF+1       ; actual length
+SRREAD: ; Read input line (char-by-char, ESC cancels)
+        XRA     A
+        STA     SRINBUF+1       ; length = 0
+
+SRRDLP: MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS            ; clobbers all regs
+        ORA     A
+        JZ      SRRDLP          ; no char, poll
+
+        CPI     ESC
+        JZ      SRCANC          ; ESC cancels
+
+        CPI     CR
+        JZ      SRRDDN          ; Enter = done
+
+        CPI     BS
+        JZ      SRRDBK
+        CPI     DEL
+        JZ      SRRDBK
+
+        ; Check buffer not full
+        STA     SRRDCH          ; save char
+        LDA     SRINBUF+1
+        CPI     78
+        JNC     SRRDLP          ; full, ignore
+
+        ; Compute write pointer: SRINBUF+2 + length
+        MOV     E,A
+        MVI     D,0
+        LXI     H,SRINBUF+2
+        DAD     D               ; HL = write position
+
+        ; Uppercase hex chars: convert a-f to A-F in hex mode
+        LDA     SRCHTYP
+        ORA     A
+        JNZ     SRRDST          ; ASCII mode, no conversion
+        LDA     SRRDCH
+        CPI     'a'
+        JC      SRRDST          ; < 'a', no change
+        CPI     'z'+1
+        JNC     SRRDST          ; > 'z', no change
+        ANI     5FH             ; clear bit 5 -> uppercase
+        STA     SRRDCH
+SRRDST: ; Store character
+        LDA     SRRDCH
+        MOV     M,A
+
+        ; Increment length
+        LDA     SRINBUF+1
+        INR     A
+        STA     SRINBUF+1
+
+        ; Echo the character
+        LDA     SRRDCH
+        CALL    OUTCHAR         ; clobbers all regs
+        JMP     SRRDLP
+
+SRRDBK: ; Backspace
+        LDA     SRINBUF+1
+        ORA     A
+        JZ      SRRDLP          ; nothing to delete
+        DCR     A
+        STA     SRINBUF+1
+        ; Erase char on screen: BS, space, BS
+        MVI     A,BS
+        CALL    OUTCHAR
+        MVI     A,' '
+        CALL    OUTCHAR
+        MVI     A,BS
+        CALL    OUTCHAR
+        JMP     SRRDLP
+
+SRRDDN: ; Enter pressed
+        LDA     SRINBUF+1
         ORA     A
         JZ      SRCANC          ; empty = cancel
 
@@ -475,6 +547,7 @@ SRHXPAR:
         XRA     A
         STA     SHPHI           ; high nibble flag (0=need high)
         STA     SHPACC          ; accumulator
+        STA     SHPCNT          ; parsed byte count = 0
 
 SHPLP:  MOV     A,B
         ORA     A
@@ -492,14 +565,14 @@ SHPLP:  MOV     A,B
         CALL    SHPCHR          ; A = nibble (0-15), CY if invalid
         JC      SHPLP           ; invalid char, skip
 
-        ; Accumulate nibble
-        PUSH    PSW             ; save nibble
+        ; Accumulate nibble (A = nibble 0-15)
+        STA     SHPNIB          ; save nibble value
         LDA     SHPHI
         ORA     A
-        POP     PSW
         JNZ     SHPLO           ; already have high nibble
 
         ; High nibble: shift left 4
+        LDA     SHPNIB
         RLC
         RLC
         RLC
@@ -511,8 +584,9 @@ SHPLP:  MOV     A,B
         JMP     SHPLP
 
 SHPLO:  ; Low nibble: combine with high
-        PUSH    H               ; save source (SHPACC load clobbers nothing, but be safe)
+        PUSH    H
         PUSH    B
+        LDA     SHPNIB
         MOV     C,A             ; C = low nibble
         LDA     SHPACC
         ORA     C               ; combine
@@ -640,7 +714,11 @@ SRTPOS:  DW     0               ; probe position for SRTRY
 SRTBYT:  DB     0               ; byte read during SRTRY
 SRFOFF:  DW     0               ; offset of last match (for display)
 
+; Input char temp
+SRRDCH:  DB     0               ; saved char during input
+
 ; Hex parser state
+SHPNIB:  DB     0               ; current nibble value
 SHPHI:   DB     0               ; high nibble flag
 SHPACC:  DB     0               ; nibble accumulator
 SHPCNT:  DB     0               ; byte count during parse

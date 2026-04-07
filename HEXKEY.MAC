@@ -168,6 +168,10 @@ MAXADDR EQU     0FFFFH      ; max displayable address
 
         PUBLIC  GETKEY          ; read next key
         PUBLIC  KBDTBL          ; ctrl-code dispatch table
+        PUBLIC  CSITBL          ; CSI sequence table
+        PUBLIC  SS3TBL          ; SS3 sequence table
+        PUBLIC  CTKTBL          ; Ctrl-K prefix table
+        PUBLIC  CTQTBL          ; Ctrl-Q prefix table
 
 ; Key state machine states
 KST_IDL EQU     0               ; idle, no prefix

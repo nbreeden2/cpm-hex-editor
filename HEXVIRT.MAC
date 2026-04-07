@@ -177,7 +177,7 @@ MAXADDR EQU     0FFFFH      ; max displayable address
         EXTRN   CURBDP          ; current buffer descriptor ptr
         EXTRN   DIRTY           ; full redraw flag
         EXTRN   GBINIT          ; initialise gap buffer
-        EXTRN   GBMVTOP         ; move cursor to offset 0
+        EXTRN   GBMVTP          ; move cursor to offset 0
         EXTRN   GBBASE          ; DE = buffer base address
         EXTRN   GBBSIZ          ; DE = buffer size
         EXTRN   GBGAPEN         ; HL = gap end offset
@@ -592,10 +592,10 @@ VGT_FIN:
         CALL    VIGBFIN
 
         ; Move cursor to top of loaded region
-        ; Temporarily clear VIMODE so GBMVTOP uses normal path
+        ; Temporarily clear VIMODE so GBMVTP uses normal path
         XRA     A
         STA     VIMODE
-        CALL    GBMVTOP
+        CALL    GBMVTP
 
         ; Set VIMODE based on whether any temp files have content
         LHLD    VBFCNT

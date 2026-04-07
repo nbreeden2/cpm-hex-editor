@@ -11,7 +11,7 @@
 ;   and dispatches the selected item action on Enter.
 ;   Menu is dismissed without action on ESC or 'Q'.
 ;
-;   Menu items (8 total):
+;   Menu items (9 total):
 ;     1. Open File
 ;     2. Save File
 ;     3. Save As...
@@ -19,7 +19,8 @@
 ;     5. Go To Offset...
 ;     6. Help
 ;     7. About
-;     8. Exit
+;     8. Toggle Format (BIN/HEX)
+;     9. Exit
 ;------------------------------------------------------------
 ; REVISION HISTORY:
 ;   1.0  1984-01-01  Initial release
@@ -193,6 +194,7 @@ MAXADDR EQU     0FFFFH      ; max displayable address
         EXTRN   OUTCHAR         ; write single char
         EXTRN   CURGOTO         ; position cursor (B=row,C=col)
         EXTRN   INFOBAR         ; redraw info bar
+        EXTRN   SCRDRAW         ; full screen redraw
         EXTRN   GBMVTO          ; move cursor to offset HL
         EXTRN   GBTXEND         ; get text end -> HL
         EXTRN   GBCSOFF         ; get cursor offset -> HL
@@ -209,7 +211,7 @@ MNUROW1 EQU     6               ; top border row (1-based)
 MNUROW2 EQU     18              ; bottom border row
 MNUCOL1 EQU     25              ; left border col
 MNUCOL2 EQU     54              ; right border col
-MNUITMS EQU     8               ; number of menu items
+MNUITMS EQU     9               ; number of menu items
 MNUFROW EQU     MNUROW1+2       ; first item row
 MNUTCOL EQU     MNUCOL1+2       ; text start column
 
@@ -256,11 +258,11 @@ MNULP:
         CPI     'j'
         JZ      MNUDN
 
-        ; Digit shortcut 1-8
+        ; Digit shortcut 1-9
         CPI     '1'
         JC      MNULP           ; below '1', ignore
-        CPI     '8'+1
-        JNC     MNULP           ; above '8', ignore
+        CPI     '9'+1
+        JNC     MNULP           ; above '9', ignore
         SUI     '1'             ; 0-based index
         STA     MNUSEL
         JMP     MNUACT
@@ -290,10 +292,15 @@ MNUDN:  LDA     MNUSEL
         JMP     MNULP
 
 MNUCNC: ; Cancel: restore screen
-        JMP     MNUCLR
+        CALL    MNUCLR
+        CALL    SCRDRAW
+        CALL    INFOBAR
+        RET
 
 MNUACT: ; Dispatch selected item
         CALL    MNUCLR          ; remove menu overlay
+        CALL    SCRDRAW         ; full screen redraw
+        CALL    INFOBAR         ; redraw info bar
 
         LDA     MNUSEL          ; 0-based index
         MOV     L,A
@@ -338,18 +345,10 @@ MNSAVE:
 
 ;--- 3. Save As -------------------------------------------
 MNSVAS:
-        MVI     B,STATROW
-        MVI     C,1
-        CALL    CURGOTO
         LXI     D,SVAPMT
-        CALL    OUTSTR
-        LXI     D,MNUIBUF
-        MVI     C,BF_RDLINE
-        CALL    BDOS
-        LDA     MNUIBUF+1       ; length
-        ORA     A
+        CALL    FIPROMPT        ; prompt, parse into WRKFCB
         JZ      MNSADN          ; cancelled
-        CALL    FISAVFN         ; copy new name to BD_FNAME
+        CALL    FISAVFN         ; copy WRKFCB name to BD_FNAME
         ; Force modified so FISAVE always writes
         LHLD    CURBDP
         MOV     A,L
@@ -429,7 +428,30 @@ MNAKEY: MVI     E,0FFH
         JZ      MNAKEY
         RET
 
-;--- 8. Exit ----------------------------------------------
+;--- 8. Toggle Format (BIN/HEX) --------------------------
+MNTFMT:
+        LHLD    CURBDP
+        MOV     A,L
+        ADI     BD_FILEFMT
+        MOV     L,A
+        MOV     A,H
+        ACI     0
+        MOV     H,A             ; HL -> BD_FILEFMT
+        MOV     A,M
+        XRI     1               ; toggle 0<->1
+        MOV     M,A
+        ; Show confirmation
+        ORA     A
+        JNZ     MTFIHX
+        LXI     D,MTFBIN
+        JMP     MTFMSG
+MTFIHX: LXI     D,MTFHEX
+MTFMSG: CALL    STATMSG
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 9. Exit ----------------------------------------------
 MNQUIT:
         JMP     DOEXIT
 
@@ -472,7 +494,7 @@ RDHLP:  ; Read one key (blocking)
         CPI     '0'
         JC      RDHLP           ; < '0', ignore
         CPI     '9'+1
-        JC      RDHDIG          ; '0'-'9'
+        JC      RDHDIG_LBL      ; '0'-'9'
         CPI     'A'
         JC      RDHLP           ; between '9' and 'A', ignore
         CPI     'F'+1
@@ -488,7 +510,7 @@ RDHUPR: ; A = 'A'-'F', convert to value 10-15
         SUI     'A'-10
         JMP     RDHVAL2
 
-RDHDIG: ; A = '0'-'9', convert to value 0-9
+RDHDIG_LBL: ; A = '0'-'9', convert to value 0-9
         SUI     '0'
 
 RDHVAL2:
@@ -793,13 +815,16 @@ MNTX4:  DB      '4. Find (hex/ASCII)...    $'
 MNTX5:  DB      '5. Go To Offset...        $'
 MNTX6:  DB      '6. Help                   $'
 MNTX7:  DB      '7. About                  $'
-MNTX8:  DB      '8. Exit                   $'
+MNTX8:  DB      '8. Toggle Format (BIN/HEX)$'
+MNTX9:  DB      '9. Exit                   $'
 
 ; Prompt strings
 OPNPMT: DB      'Open file: $'
 SVAPMT: DB      'Save as: $'
 GTOPMT: DB      'Go to offset (hex): $'
 ABTMSG: DB      'HEDIT v1.0 CP/M Hex Editor  (any key)$'
+MTFBIN: DB      'Format: Binary$'
+MTFHEX: DB      'Format: Intel HEX$'
 
 ; Dispatch table (CSEG): order matches MNUITMS
 MNUTBL:
@@ -810,7 +835,8 @@ MNUTBL:
         DW      MNGOTO          ; 4 Go To Offset
         DW      MNHELP          ; 5 Help
         DW      MNABUT          ; 6 About
-        DW      MNQUIT          ; 7 Exit
+        DW      MNTFMT          ; 7 Toggle Format
+        DW      MNQUIT          ; 8 Exit
 
 ; Item text pointer table (CSEG)
 MNUTXP:
@@ -822,6 +848,7 @@ MNUTXP:
         DW      MNTX6
         DW      MNTX7
         DW      MNTX8
+        DW      MNTX9
 
 ;=============================================================
 ; DATA SEGMENT

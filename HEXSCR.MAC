@@ -212,11 +212,13 @@ IBINSTR: DB     ' [INS]','$'
 IBOVSTR: DB     ' [OVR]','$'
 IBHXSTR: DB     ' [HEX]','$'
 IBASSTR: DB     ' [ASC]','$'
+IBBINSTR: DB    ' [BIN]','$'
+IBHEXSTR: DB    ' [IHEX]','$'
 NAMNMST: DB     '[No Name]','$'
 LDNGMST: DB     '[Loading]','$'
 
 ;--- Column header string (row 2) ---------------------
-COLHDR:  DB     'Offset  00 01 02 03 04 05 06 07'
+COLHDR:  DB     'Addr: 00 01 02 03 04 05 06 07'
          DB     '  08 09 0A 0B 0C 0D 0E 0F  ASCII'
          DB     '$'
 
@@ -328,15 +330,14 @@ SDLOOP:
         DAD     D               ; HL = TOPOFF + row*16
         SHLD    SDOFFS          ; save row offset
 
-        ; Check if offset < data length
+        ; Check if offset >= data length
         XCHG                    ; DE = row offset
         LHLD    SDTXEND         ; HL = data length
-        MOV     A,L
-        SUB     E
-        MOV     A,H
-        SBB     D
-        JC      SDBLNK          ; offset > length -> blank row
-        JZ      SDBLNK          ; offset == length -> blank row (no bytes)
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; offset - length
+        JNC     SDBLNK          ; offset >= length -> blank row
 
         ; Compute byte count = min(16, length - offset)
         ; DE = row offset, HL = data length
@@ -362,11 +363,10 @@ SDREAD:
         ; Read bytes: offset in SDOFFS, count in C
         MOV     A,C
         STA     SDBCNT          ; save byte count
-        LHLD    SDOFFS
-        XCHG                    ; DE = offset
-        LXI     H,ROWBUF        ; HL = destination
-        MOV     B,A             ; B = count
-        CALL    GBRDBLK         ; read B bytes from offset DE into HL
+        MVI     B,0             ; BC = byte count (0-16)
+        LXI     D,ROWBUF        ; DE = destination
+        LHLD    SDOFFS          ; HL = logical offset
+        CALL    GBRDBLK         ; read BC bytes from HL into DE
 
         ; Render the row
         LDA     SDROW
@@ -505,10 +505,9 @@ SCRDRD:
         ; Read bytes into ROWBUF
         MOV     A,C
         STA     SDBCNT
-        LHLD    SDOFFS
-        XCHG                    ; DE = offset
-        LXI     H,ROWBUF
-        MOV     B,A             ; B = count
+        MVI     B,0             ; BC = byte count (0-16)
+        LXI     D,ROWBUF        ; DE = destination
+        LHLD    SDOFFS          ; HL = logical offset
         CALL    GBRDBLK
 
         ; Render
@@ -636,6 +635,8 @@ SHHXDN:
         ;--- Gap between hex and ASCII ---
         LXI     D,SGRRES
         CALL    OUTSTR
+        MVI     A,' '
+        CALL    OUTCHAR
         MVI     A,' '
         CALL    OUTCHAR
 
@@ -839,6 +840,23 @@ IBIOOUT:
         JMP     IBHAOUT
 IBASC:  LXI     D,IBASSTR
 IBHAOUT:
+        CALL    OUTSTR
+
+        ;--- [BIN] or [HEX] file format ---
+        LHLD    CURBDP
+        MOV     A,L
+        ADI     BD_FILEFMT
+        MOV     L,A
+        MOV     A,H
+        ACI     0
+        MOV     H,A
+        MOV     A,M
+        ORA     A
+        JNZ     IBIHEX
+        LXI     D,IBBINSTR
+        JMP     IBFMOUT
+IBIHEX: LXI     D,IBHEXSTR
+IBFMOUT:
         CALL    OUTSTR
 
         ;--- Pad rest of info bar with spaces, clear to EOL ---
