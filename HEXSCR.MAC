@@ -543,6 +543,63 @@ SCRHROW:
         XCHG
         SHLD    SHBUF           ; save buffer address
 
+        ; Cache mark boundaries for highlight check
+        LHLD    CURBDP
+        LXI     D,BD_MRKBG
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        XCHG
+        SHLD    SHMKBG          ; save MRKBG
+        LHLD    CURBDP
+        LXI     D,BD_MRKEN
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        XCHG
+        SHLD    SHMKEN          ; save MRKEN
+
+        ; Cache cursor offset for live mark preview
+        CALL    GBCSOFF
+        SHLD    SHCSOF
+
+        ; Compute row base offset = TOPOFF + row*16
+        LDA     SHROW
+        MOV     L,A
+        MVI     H,0
+        DAD     H
+        DAD     H
+        DAD     H
+        DAD     H               ; HL = row*16
+        XCHG
+        LHLD    SDTOPOFF
+        DAD     D
+        SHLD    SHROFF          ; save row base offset
+
+        ; Compute highlight range for this row
+        CALL    SHHLRNG
+        ; Clamp highlight end to actual byte count
+        LDA     SHHLMD
+        ORA     A
+        JZ      SHHLOK          ; no highlight, skip
+        LDA     SHCNT
+        ORA     A
+        JZ      SHHLOF          ; no bytes, disable highlight
+        DCR     A               ; A = last valid index
+        MOV     B,A
+        LDA     SHHLE
+        CMP     B
+        JC      SHHLOK          ; SHHLE < last: ok
+        JZ      SHHLOK          ; SHHLE == last: ok
+        MOV     A,B
+        STA     SHHLE           ; clamp to last valid byte
+        JMP     SHHLOK
+SHHLOF: XRA     A
+        STA     SHHLMD          ; disable highlight
+SHHLOK:
+
         ; Position cursor at start of row
         LDA     SHROW
         ADI     EDITFR          ; convert to 1-based screen row
@@ -594,7 +651,27 @@ SHHXLP:
         MVI     A,' '
         CALL    OUTCHAR
 SHNOSP:
-        ; Check if this byte exists
+        ; Check highlight transitions before byte/empty check
+        LDA     SHHLMD
+        ORA     A
+        JZ      SHHXBC          ; no highlight, skip attr logic
+        LDA     SHIDX
+        MOV     B,A
+        LDA     SHHLS
+        CMP     B
+        JNZ     SHHXE1          ; not at highlight start
+        LXI     D,SGRREV        ; switch to reverse video
+        CALL    OUTSTR
+        JMP     SHHXBC
+SHHXE1: ; Check if leaving highlight after prev byte
+        LDA     SHHLE
+        INR     A               ; end+1
+        CMP     B
+        JNZ     SHHXBC
+        LXI     D,SGRCYN        ; back to cyan
+        CALL    OUTSTR
+
+SHHXBC: ; Check if this byte exists
         LDA     SHIDX
         MOV     B,A
         LDA     SHCNT
@@ -602,7 +679,7 @@ SHNOSP:
         JZ      SHEMPT          ; index == count: empty
         JC      SHEMPT          ; index > count: empty
 
-        ; Output hex byte
+SHHXRD: ; Output hex byte
         LHLD    SHBUF
         LDA     SHIDX
         ADD     L
@@ -632,7 +709,7 @@ SHNXHX:
         JMP     SHHXLP
 
 SHHXDN:
-        ;--- Gap between hex and ASCII ---
+        ;--- Reset any active highlight, gap between hex and ASCII ---
         LXI     D,SGRRES
         CALL    OUTSTR
         MVI     A,' '
@@ -655,7 +732,26 @@ SHASCLP:
         JZ      SHASCDN         ; no more bytes
         JC      SHASCDN
 
-        ; Get byte value
+        ; Check if entering highlight at this byte
+        LDA     SHHLMD
+        ORA     A
+        JZ      SHACRD          ; no highlight active for this row
+        LDA     SHIDX
+        MOV     B,A
+        LDA     SHHLS
+        CMP     B
+        JNZ     SHACE1          ; not at highlight start
+        LXI     D,SGRREV        ; switch to reverse video
+        CALL    OUTSTR
+SHACE1: ; Check if leaving highlight after this byte
+        LDA     SHHLE
+        INR     A               ; end+1
+        CMP     B
+        JNZ     SHACRD
+        LXI     D,SGRYEL        ; back to yellow
+        CALL    OUTSTR
+
+SHACRD: ; Get byte value
         LHLD    SHBUF
         LDA     SHIDX
         ADD     L
@@ -688,6 +784,133 @@ SHASCDN:
         CALL    OUTSTR
         LXI     D,CLREOL
         JMP     OUTSTR
+
+;-------------------------------------------------------------
+; SHHLRNG - Precompute highlight range for the current row.
+; Sets SHHLMD=1 if any bytes in this row are highlighted,
+; SHHLS=first highlighted index (0-15),
+; SHHLE=last highlighted index (0-15).
+; Called once per row, not per byte.
+;-------------------------------------------------------------
+SHHLRNG:
+        ; Default: no highlight
+        XRA     A
+        STA     SHHLMD
+
+        ; If MRKBG = FFFF, no mark active
+        LHLD    SHMKBG
+        MOV     A,H
+        ANA     L
+        INR     A
+        RZ                      ; MRKBG=FFFF: done
+
+        ; Determine effective range: low..high
+        LHLD    SHMKEN
+        MOV     A,H
+        ANA     L
+        INR     A
+        JNZ     SHHR2           ; MRKEN set, use MRKBG..MRKEN
+
+        ; Live preview: range = min/max(MRKBG, cursor)
+        LHLD    SHMKBG
+        XCHG                    ; DE = MRKBG
+        LHLD    SHCSOF          ; HL = cursor
+        MOV     A,L
+        SUB     E
+        MOV     A,H
+        SBB     D               ; cursor - MRKBG
+        JNC     SHHR1           ; cursor >= MRKBG
+        ; cursor < MRKBG: low=cursor, high=MRKBG
+        LHLD    SHCSOF
+        SHLD    SHCKLO
+        LHLD    SHMKBG
+        SHLD    SHCKHI
+        JMP     SHHR3
+SHHR1:  ; cursor >= MRKBG
+        LHLD    SHMKBG
+        SHLD    SHCKLO
+        LHLD    SHCSOF
+        SHLD    SHCKHI
+        JMP     SHHR3
+
+SHHR2:  ; Both marks set
+        LHLD    SHMKBG
+        SHLD    SHCKLO
+        LHLD    SHMKEN
+        SHLD    SHCKHI
+
+SHHR3:
+        ; Now SHCKLO..SHCKHI is the logical highlight range.
+        ; Row covers offsets SHROFF .. SHROFF+15.
+        ; Clamp highlight to row and compute indices 0-15.
+
+        ; If SHCKHI < SHROFF, no overlap
+        LHLD    SHCKHI
+        XCHG                    ; DE = high
+        LHLD    SHROFF          ; HL = row start
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; high - rowstart
+        RC                      ; high < rowstart: no overlap
+
+        ; If SHCKLO > SHROFF+15, no overlap
+        LHLD    SHROFF
+        LXI     D,15
+        DAD     D               ; HL = row end (SHROFF+15)
+        XCHG                    ; DE = row end
+        LHLD    SHCKLO          ; HL = low
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; rowend - low
+        RC                      ; rowend < low: no overlap
+
+        ; There is overlap. Clamp low to SHROFF.
+        LHLD    SHCKLO
+        XCHG                    ; DE = low
+        LHLD    SHROFF          ; HL = rowstart
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; low - rowstart
+        JNC     SHHR4           ; low >= rowstart: use low
+        LHLD    SHROFF          ; clamp to rowstart
+        SHLD    SHCKLO
+SHHR4:
+        ; Clamp high to SHROFF+15
+        LHLD    SHROFF
+        LXI     D,15
+        DAD     D               ; HL = row end
+        XCHG                    ; DE = row end
+        LHLD    SHCKHI          ; HL = high
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; rowend - high
+        JNC     SHHR5           ; rowend >= high: use high
+        ; clamp high to rowend
+        XCHG
+        SHLD    SHCKHI
+SHHR5:
+        ; Convert to 0-based indices: index = offset - SHROFF
+        LHLD    SHCKLO
+        XCHG
+        LHLD    SHROFF
+        MOV     A,E
+        SUB     L               ; low byte is enough (0-15)
+        STA     SHHLS           ; highlight start index
+
+        LHLD    SHCKHI
+        XCHG
+        LHLD    SHROFF
+        MOV     A,E
+        SUB     L
+        STA     SHHLE           ; highlight end index
+
+        MVI     A,1
+        STA     SHHLMD          ; highlight active
+        RET
 
 ;=============================================================
 ; INFOBAR - Update info bar (row 1).
@@ -1146,6 +1369,15 @@ SHROW:   DB     0               ; SCRHROW: row number
 SHCNT:   DB     0               ; SCRHROW: byte count
 SHBUF:   DW     0               ; SCRHROW: buffer address
 SHIDX:   DB     0               ; SCRHROW: byte index
+SHMKBG:  DW     0               ; SCRHROW: cached MRKBG
+SHMKEN:  DW     0               ; SCRHROW: cached MRKEN
+SHROFF:  DW     0               ; SCRHROW: row base offset
+SHCSOF:  DW     0               ; SCRHROW: cached cursor offset
+SHCKLO:  DW     0               ; SHHLRNG: effective mark low
+SHCKHI:  DW     0               ; SHHLRNG: effective mark high
+SHHLMD:  DB     0               ; SHHLRNG: 1=highlight active
+SHHLS:   DB     0               ; SHHLRNG: highlight start (0-15)
+SHHLE:   DB     0               ; SHHLRNG: highlight end (0-15)
 CPBYTE:  DB     0               ; CURPOS: byte_in_row
 CPTMP1:  DW     0               ; CURPOS: cursor offset
 CPTMP2:  DW     0               ; CURPOS: top offset

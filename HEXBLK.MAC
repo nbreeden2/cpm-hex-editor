@@ -290,22 +290,23 @@ BLCOPY:
         SHLD    CLPPTR          ; clip write pointer
 
 BCCPLP:
-        ; Check BLKPOS < BLKEN
-        LHLD    BLKEN
-        XCHG                    ; DE = BLKEN
+        ; Check BLKPOS <= BLKEN (inclusive end)
         LHLD    BLKPOS          ; HL = BLKPOS
+        XCHG                    ; DE = BLKPOS
+        LHLD    BLKEN           ; HL = BLKEN
         MOV     A,H
         CMP     D
-        JC      BCGBYT          ; BLKPOS.H < BLKEN.H: continue
-        JNZ     BCDON           ; BLKPOS.H > BLKEN.H: done
+        JC      BCDON           ; BLKEN.H < BLKPOS.H: done
+        JNZ     BCGBYT          ; BLKEN.H > BLKPOS.H: continue
         MOV     A,L
         CMP     E
-        JNC     BCDON           ; BLKPOS >= BLKEN: done
+        JC      BCDON           ; BLKEN < BLKPOS: done
 
 BCGBYT:
         ; Read byte at BLKPOS from gap buffer
         LHLD    BLKPOS
-        CALL    GBLOGRD         ; A = byte (regs clobbered)
+        CALL    GBLOGRD         ; A = byte, CY = past end
+        JC      BCDON           ; past end of data, stop
 
         ; Store byte to clipboard via saved pointer
         LHLD    CLPPTR
@@ -352,8 +353,8 @@ BLDEL:
         LHLD    BLKBG
         CALL    GBMVTO          ; move cursor to mark start
 
-        ; Delete BLKEN-BLKBG bytes
-        ; Compute count = BLKEN - BLKBG
+        ; Delete BLKEN-BLKBG+1 bytes (inclusive end)
+        ; Compute count = BLKEN - BLKBG + 1
         LHLD    BLKEN
         XCHG                    ; DE = BLKEN
         LHLD    BLKBG           ; HL = BLKBG
@@ -362,7 +363,8 @@ BLDEL:
         MOV     L,A
         MOV     A,D
         SBB     H
-        MOV     H,A             ; HL = count
+        MOV     H,A             ; HL = BLKEN - BLKBG
+        INX     H               ; HL = count (inclusive)
         SHLD    BDDCNT          ; save count to memory
 
 BDDELP:

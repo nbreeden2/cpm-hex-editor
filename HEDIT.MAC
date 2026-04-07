@@ -353,6 +353,27 @@ MLFULL:
         STA     DRTLINE
         CALL    SCRDRAW         ; full screen redraw
 MLDONE:
+        ; If block mark is in progress (MRKBG set, MRKEN=FFFF),
+        ; force full redraw so live highlight follows cursor
+        MVI     A,BD_MRKBG
+        CALL    BDFLD
+        MOV     A,M
+        INX     H
+        ANA     M               ; A = low AND high of MRKBG
+        INR     A
+        JZ      MLNOML          ; MRKBG=FFFF: no mark active
+        ; MRKBG set: check MRKEN
+        MVI     A,BD_MRKEN
+        CALL    BDFLD
+        MOV     A,M
+        INX     H
+        ANA     M               ; A = low AND high of MRKEN
+        INR     A
+        JNZ     MLNOML          ; MRKEN set: mark complete, no live
+        ; Live mark: force full redraw
+        MVI     A,1
+        STA     DIRTY
+MLNOML:
         CALL    INFOBAR         ; always update info bar
         CALL    CURPOS          ; place HW cursor
 
@@ -610,26 +631,7 @@ DO_PGU:
         LXI     D,0             ; clamp to 0
 PGUSET: XCHG                    ; HL = target
         CALL    GBMVTO
-        ; Adjust TOPOFF: subtract BYTESPG, clamp to 0
-        MVI     A,BD_TOPOFF
-        CALL    BDFLD           ; HL -> BD_TOPOFF
-        MOV     E,M
-        INX     H
-        MOV     D,M             ; DE = current TOPOFF
-        PUSH    H               ; save ptr to TOPOFF+1
-        LXI     H,BYTESPG
-        MOV     A,E
-        SUB     L
-        MOV     E,A
-        MOV     A,D
-        SBB     H
-        MOV     D,A             ; DE = TOPOFF - BYTESPG
-        JNC     PGUTOK          ; no underflow
-        LXI     D,0             ; clamp to 0
-PGUTOK: POP     H               ; HL -> TOPOFF+1
-        MOV     M,D             ; store high byte
-        DCX     H
-        MOV     M,E             ; store low byte
+        CALL    CHKSCRL         ; adjust TOPOFF if needed
         JMP     MLDIRT
 
 ;--- Navigation: page down (BYTESPG bytes) ---
@@ -661,22 +663,7 @@ PGDOK:  XCHG                    ; DE = target, save it
         POP     H               ; discard saved TXEND
         XCHG                    ; HL = target
 PGDGO:  CALL    GBMVTO
-        ; Adjust TOPOFF: add BYTESPG
-        MVI     A,BD_TOPOFF
-        CALL    BDFLD           ; HL -> BD_TOPOFF
-        MOV     E,M
-        INX     H
-        MOV     D,M             ; DE = current TOPOFF
-        LXI     H,BYTESPG
-        DAD     D               ; HL = TOPOFF + BYTESPG
-        ; Clamp TOPOFF: ensure cursor is still visible
-        ; (CHKSCRL will fix it if needed)
-        XCHG                    ; DE = new TOPOFF
-        MVI     A,BD_TOPOFF
-        CALL    BDFLD           ; HL -> BD_TOPOFF
-        MOV     M,E
-        INX     H
-        MOV     M,D
+        CALL    CHKSCRL         ; adjust TOPOFF if needed
         JMP     MLDIRT
 
 ;--- Navigation: home (start of current 16-byte row) ---
@@ -838,10 +825,13 @@ DO_EXT: CALL    DOEXIT          ; save & exit
 DO_BMK: CALL    BLMARK
         JMP     MLDIRT
 DO_BCP: CALL    BLCOPY
+        CALL    CHKSCRL
         JMP     MLDIRT
 DO_BDL: CALL    BLDEL
+        CALL    CHKSCRL
         JMP     MLDIRT
 DO_BPS: CALL    BLPASTE
+        CALL    CHKSCRL
         JMP     MLDIRT
 
 ;--- Menu ---
