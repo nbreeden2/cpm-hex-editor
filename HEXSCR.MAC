@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEXSCR.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.0
+; VERSION: 1.01
 ; DATE:    1984-01-01
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -18,7 +18,7 @@
 ;============================================================
 ; FILE:    HEDIT.INC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.0
+; VERSION: 1.01
 ; DATE:    1984-01-01
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -207,8 +207,8 @@ SGRCYN:  DB     ESC,'[','0',';','3','6','m','$' ; cyan
 SGRYEL:  DB     ESC,'[','0',';','3','3','m','$' ; yellow
 
 ;--- Separator version string -------------------------
-SPRVER:  DB     ' HEDIT v1.0 ','$'
-SPRLEN  EQU     13              ; length of SPRVER (excluding $)
+SPRVER:  DB     ' HEDIT v1.01 ','$'
+SPRLEN  EQU     14              ; length of SPRVER (excluding $)
 
 ;--- Info bar label strings ---------------------------
 IBSZSTR: DB     ' Size:','$'
