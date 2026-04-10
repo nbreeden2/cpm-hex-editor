@@ -303,8 +303,6 @@ FIBLP:
 FIBLP1:
 	; Insert bytes into gap buffer
 	MOV	A,M
-	CPI	CPMEOF		; CP/M EOF marker?
-	JZ	FIEOF
 
 	PUSH	H		; save DMA pointer
 	PUSH	B		; save loop counter

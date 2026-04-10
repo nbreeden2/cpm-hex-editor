@@ -307,6 +307,7 @@ VIGOTO:
         MOV     A,H
         ORA     L
         JZ      VGT_NB          ; no BEFORE temp
+        SHLD    VICPCNT         ; set byte count for copy
         CALL    VIOPNBEF        ; open BEFORE for reading
         CALL    VICPFIL         ; copy to output
         CALL    VICLSBEF        ; close BEFORE
@@ -319,6 +320,7 @@ VGT_NB:
         MOV     A,H
         ORA     L
         JZ      VGT_NA          ; no AFTER temp
+        SHLD    VICPCNT         ; set byte count for copy
         CALL    VIOPNAFT        ; open AFTER for reading
         CALL    VICPFIL         ; copy to output
         CALL    VICLSAFT        ; close AFTER
@@ -382,8 +384,6 @@ VGT_A:
         MVI     B,RECSIZ        ; 128 bytes per record
 VGT_AL:
         MOV     A,M             ; read byte
-        CPI     CPMEOF
-        JZ      VGT_AE          ; hit EOF marker
 
         ; Write byte to BEFORE via VIWBYT
         PUSH    H
@@ -463,8 +463,6 @@ VGT_PB:
         LHLD    VIREMPTR        ; HL = source pointer
 VGT_RL:
         MOV     A,M             ; read byte
-        CPI     CPMEOF
-        JZ      VGT_BD          ; hit EOF
         ; Write byte directly to buffer
         PUSH    H
         PUSH    B
@@ -499,8 +497,6 @@ VGT_BR:
         MVI     B,RECSIZ
 VGT_BL:
         MOV     A,M             ; read byte
-        CPI     CPMEOF
-        JZ      VGT_BD          ; hit EOF
 
         ; Write byte directly to buffer memory
         PUSH    H
@@ -550,8 +546,6 @@ VGT_CL:
         MVI     B,RECSIZ
 VGT_CB:
         MOV     A,M
-        CPI     CPMEOF
-        JZ      VGT_CD          ; hit EOF
 
         ; Write byte to AFTER
         PUSH    H
@@ -644,6 +638,7 @@ VISAVALL:
         MOV     A,H
         ORA     L
         JZ      VSA_NB
+        SHLD    VICPCNT         ; set byte count for copy
         CALL    VIOPNBEF
         CALL    VICPFIL
         CALL    VICLSBEF
@@ -656,6 +651,7 @@ VSA_NB:
         MOV     A,H
         ORA     L
         JZ      VSA_NA
+        SHLD    VICPCNT         ; set byte count for copy
         CALL    VIOPNAFT
         CALL    VICPFIL
         CALL    VICLSAFT
@@ -778,10 +774,11 @@ VFL_CP: MOV     A,M
 
 ;=============================================================
 ; VICPFIL - Copy open temp file to output via VIWBYT.
-; Reads sequential records, writes bytes until CPMEOF.
-; Entry:  Temp file FCB open for reading (DMA set to VIDMA).
+; Reads sequential records, copies exactly VICPCNT bytes.
+; Entry:  VICPCNT = number of bytes to copy.
+;         Temp file FCB open for reading (DMA set to VIDMA).
 ;         VIWFCB set to output FCB.
-; Exit:   All non-EOF bytes copied to output.
+; Exit:   All bytes copied to output.
 ;=============================================================
 VICPFIL:
 VCF_LP:
@@ -801,9 +798,19 @@ VCF_OK:
         LXI     H,VIDMA
         MVI     B,RECSIZ
 VCF_BL:
+        ; Check byte count
+        PUSH    H
+        LHLD    VICPCNT
+        MOV     A,H
+        ORA     L
+        POP     H
+        RZ                      ; all bytes copied
+        PUSH    H
+        LHLD    VICPCNT
+        DCX     H
+        SHLD    VICPCNT
+        POP     H
         MOV     A,M
-        CPI     CPMEOF
-        RZ                      ; hit EOF marker, done
         PUSH    H
         PUSH    B
         CALL    VIWBYT          ; write byte to output
@@ -1384,8 +1391,9 @@ VBFCB:  DS      36              ; BEFORE temp FCB
 VAFCB:  DS      36              ; AFTER temp FCB
 VMGFCB: DS      36              ; MERGE temp FCB
 
-; VICPFIL read FCB pointer
+; VICPFIL read FCB pointer and byte count
 VICFCB: DW      0               ; pointer to FCB being read
+VICPCNT: DW     0               ; bytes remaining to copy
 
 ; VIGOTO working variables
 VITGTOFF: DW    0               ; target byte offset
