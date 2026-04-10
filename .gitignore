@@ -1,5 +1,6 @@
 # Build artifacts
 *.REL
+HEDIT-MONO.COM
 
 # Build logs
 *.log

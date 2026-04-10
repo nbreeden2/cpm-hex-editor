@@ -95,6 +95,9 @@ MODE_ASC EQU   1           ; editing in ASCII field
 MODE_OVR EQU   0           ; overwrite mode
 MODE_INS EQU   1           ; insert mode
 
+;--- Color assembly option ----------------------------
+COLOR   EQU     0           ; 1 = color, 0 = monochrome
+
 ;--- SGR attribute byte values ------------------------
 ATTR_NRM EQU    00H         ; normal
 ATTR_BLD EQU    01H         ; bold
@@ -202,9 +205,15 @@ SGRRES:  DB     ESC,'[','0','m','$'  ; SGR reset
 SGRBLD:  DB     ESC,'[','0',';','1','m','$'  ; SGR reset+bold
 SGRDIM:  DB     ESC,'[','0',';','2','m','$'  ; SGR reset+dim
 SGRREV:  DB     ESC,'[','0',';','7','m','$'  ; SGR reset+reverse
+        IF COLOR
 SGRBGN:  DB     ESC,'[','0',';','1',';','3','2','m','$' ; bold green
 SGRCYN:  DB     ESC,'[','0',';','3','6','m','$' ; cyan
 SGRYEL:  DB     ESC,'[','0',';','3','3','m','$' ; yellow
+        ELSE
+SGRBGN:  DB     ESC,'[','0',';','1','m','$'  ; bold (mono)
+SGRCYN:  DB     ESC,'[','0','m','$'          ; reset (mono)
+SGRYEL:  DB     ESC,'[','0','m','$'          ; reset (mono)
+        ENDIF
 
 ;--- Separator version string -------------------------
 SPRVER:  DB     ' HEDIT v1.01 ','$'

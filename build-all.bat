@@ -1,71 +1,76 @@
+cls
 @echo off
-REM build-all.bat - Build HEDIT hex editor using cpmulator
-REM Requires: cpmulator.exe, M80.COM, L80.COM in PATH or current dir
+REM ----------------------------------------------------------------
+REM BUILD-ALL.BAT - Build HEDIT hex editor variants
+REM
+REM   HEDIT.COM    - Mono  (no color)
+REM   HEDIT-CL.COM - Color (color)
+REM
+REM Requires: cpmulator.exe, M80.COM, L80.COM, Python (CPMFMT.PY)
+REM ----------------------------------------------------------------
 
-echo === Building HEDIT Hex Editor ===
+echo === HEDIT Multi-Variant Build ===
 
-echo Preprocessing .MAC files...
-python CPMFMT.PY HEDIT.MAC HEXSCR.MAC HEXKEY.MAC HEXGAP.MAC HEXIO.MAC HEXMENU.MAC HEXSRCH.MAC HEXBLK.MAC HEXKBND.MAC HEXVIRT.MAC HEXHELP.MAC
+echo First cleanup
+if exist HEDIT.COM   del HEDIT.COM 2>nul
+if exist HEDIT-CL.COM del HEDIT-CL.COM 2>nul
+if exist *.REL       del *.REL 2>nul
 
-echo Assembling modules...
-cpmulator M80.COM =HEDIT
-echo HEDIT
-PAUSE
-if errorlevel 1 goto :err
+REM --- Format and assemble all non-variant modules (once) ---
+echo Formatting source files...
+python CPMFMT.PY HEDIT.MAC HEXKEY.MAC HEXGAP.MAC HEXIO.MAC HEXMENU.MAC HEXSRCH.MAC HEXBLK.MAC HEXKBND.MAC HEXVIRT.MAC HEXHELP.MAC
+if errorlevel 1 goto fail
+
+echo Assembling shared modules...
+for %%M in (HEDIT HEXKEY HEXGAP HEXIO HEXMENU HEXSRCH HEXBLK HEXKBND HEXVIRT HEXHELP) do (
+    cpmulator M80.COM =%%M
+    echo %%M
+	pause
+    if errorlevel 1 goto fail
+)
+
+REM --- Build each variant ---
+echo.
+echo --- Variant 1/2: HEDIT.COM (mono) ---
+python HEBUILD.PY 0
+if errorlevel 1 goto fail
+python CPMFMT.PY HEXSCR.MAC
+if errorlevel 1 goto fail
 cpmulator M80.COM =HEXSCR
-echo HEXSCR
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXKEY
-echo HEXKEY
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXGAP
-echo HEXGAP
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXIO
-echo HEXIO
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXMENU
-echo HEXMENU
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXSRCH
-echo HEXSRCH
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXBLK
-echo HEXBLK
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXKBND
-echo HEXKBND
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXVIRT
-echo HEXVIRT
-PAUSE
-if errorlevel 1 goto :err
-cpmulator M80.COM =HEXHELP
-echo HEXHELP
-PAUSE
-if errorlevel 1 goto :err
-
-echo Linking...
+if errorlevel 1 goto fail
 cpmulator L80.COM HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
-if errorlevel 1 goto :err
+if errorlevel 1 goto fail
+copy /y HEDIT.COM HEDIT-MONO.COM >nul
+echo Built HEDIT.COM (mono)
 
-DIR *.REL
-PAUSE
-DIR H*.COM
-PAUSE
+echo.
+echo --- Variant 2/2: HEDIT-CL.COM (color) ---
+python HEBUILD.PY 1
+if errorlevel 1 goto fail
+python CPMFMT.PY HEXSCR.MAC
+if errorlevel 1 goto fail
+cpmulator M80.COM =HEXSCR
+if errorlevel 1 goto fail
+cpmulator L80.COM HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
+if errorlevel 1 goto fail
+copy /y HEDIT.COM HEDIT-CL.COM >nul
+echo Built HEDIT-CL.COM (color)
 
-echo === Build complete: HEDIT.COM ===
-goto :end
+REM --- Restore source to default (mono) ---
+python HEBUILD.PY 0
+python CPMFMT.PY HEXSCR.MAC
 
-:err
+REM --- Rename mono back to HEDIT.COM ---
+copy /y HEDIT-MONO.COM HEDIT.COM >nul
+del HEDIT-MONO.COM 2>nul
+
+echo.
+echo === All variants built ===
+echo   HEDIT.COM    - Mono  (no color)
+echo   HEDIT-CL.COM - Color (color)
+goto end
+
+:fail
 echo === BUILD FAILED ===
 exit /b 1
 
