@@ -206,6 +206,10 @@ SGRBGN:  DB     ESC,'[','0',';','1',';','3','2','m','$' ; bold green
 SGRCYN:  DB     ESC,'[','0',';','3','6','m','$' ; cyan
 SGRYEL:  DB     ESC,'[','0',';','3','3','m','$' ; yellow
 
+;--- Separator version string -------------------------
+SPRVER:  DB     ' HEDIT v1.0 ','$'
+SPRLEN  EQU     13              ; length of SPRVER (excluding $)
+
 ;--- Info bar label strings ---------------------------
 IBSZSTR: DB     ' Size:','$'
 IBOFSTR: DB     ' Off:','$'
@@ -283,7 +287,9 @@ SEPRDRAW:
         CALL    CURGOTO
         LXI     D,SGRDIM
         CALL    OUTSTR
-        MVI     B,SCRCOLS       ; 80 '=' characters
+        LXI     D,SPRVER        ; print version string
+        CALL    OUTSTR
+        MVI     B,SCRCOLS-SPRLEN ; fill rest with '='
 SPRLP:  MVI     A,'='
         PUSH    B
         CALL    OUTCHAR
