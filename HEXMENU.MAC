@@ -360,17 +360,10 @@ MNUACT: ; Dispatch selected item
 
 ;--- 1. Open File -----------------------------------------
 MNOPEN:
-        MVI     B,STATROW
-        MVI     C,1
-        CALL    CURGOTO
         LXI     D,OPNPMT
-        CALL    OUTSTR
-        LXI     D,MNUIBUF
-        MVI     C,BF_RDLINE
-        CALL    BDOS
-        LDA     MNUIBUF+1       ; length
-        ORA     A
+        CALL    FIPROMPT        ; prompt, parse into WRKFCB
         JZ      MNODNE          ; cancelled
+        LXI     D,0             ; DE=0: WRKFCB already set
         CALL    FIOPEN
         MVI     A,1
         STA     DIRTY
