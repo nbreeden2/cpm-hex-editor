@@ -8,7 +8,8 @@
 - CPMFMT.PY inlines HEDIT.INC, normalizes CR+LF, appends Ctrl-Z EOF.
 - BDOS calls clobber ALL registers. Any value needed across CALL must be saved to memory or stack.
 - Version shown via ESC menu -> "About". Update in HEXMENU.MAC.
-- Version also in: HEXHELP.MAC (help header), HEXSCR.MAC (separator).
+- Version also in: HEXHELP.MAC (help header), HEXSCR.MAC (separator SPRVER).
+- Color variant controlled by `COLOR EQU` in HEXSCR.MAC (0=mono, 1=color).
 
 ## Build
 
@@ -18,6 +19,16 @@ M80 =<module>                       # assemble (one per .MAC)
 L80 HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
 ```
 
+### Variant Build (mono + color)
+
+```
+python HEBUILD.PY 0                 # patch COLOR=0 (mono)
+python HEBUILD.PY 1                 # patch COLOR=1 (color)
+```
+
+After patching, rerun `CPMFMT.PY HEXSCR.MAC` and reassemble HEXSCR only.
+`build-all.bat` automates this, producing HEDIT.COM (mono) and HEDIT-CL.COM (color).
+
 ## Screen Layout (VT100/ANSI, 80x24)
 
 ```
@@ -25,7 +36,7 @@ Row  1: INFOBAR  — filename, file size, offset (hex+dec), INS/OVR, HEX/ASC mod
 Row  2: COLHDR   — column header "Offset  00 01 02 ... 0F  ASCII"
 Row  3-22: HEX AREA — 20 rows x 16 bytes = 320 bytes visible
          "0000: 41 42 43 44 45 46 47 48  49 4A 4B 4C 4D 4E 4F 50  ABCDEFGHIJKLMNOP"
-Row 23: SEPRDRAW — separator line (80 `=` chars)
+Row 23: SEPRDRAW — separator line (version string + `=` fill)
 Row 24: STATROW  — status messages / prompts
 ```
 

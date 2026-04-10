@@ -3,7 +3,7 @@
 **Platform:** CP/M 2.2, Intel 8080
 **Assembler:** Microsoft M80 / L80
 **Terminal:** VT100 / ANSI
-**Version:** 1.0
+**Version:** 1.01
 
 ---
 
@@ -31,7 +31,7 @@ HEDIT is a full-screen hex editor for CP/M 2.2 written in Intel 8080 assembly la
 Row  1: Info bar — filename, size (hex), offset (hex), INS/OVR, HEX/ASC
 Row  2: Column headers — Offset  00 01 02 ... 0F  ASCII
 Row  3-22: Hex display — 20 rows of 16 bytes each
-Row 23: Separator
+Row 23: Separator (version string + '=' fill)
 Row 24: Status / prompts
 ```
 
@@ -100,9 +100,10 @@ Each data row:
 | 3 | Save As... |
 | 4 | Find (hex/ASCII)... |
 | 5 | Go To Offset... |
-| 6 | Help |
-| 7 | About |
-| 8 | Exit |
+| 6 | Help / About |
+| 7 | Base Offset... |
+| 8 | Toggle Format (BIN/HEX) |
+| 9 | Exit |
 
 ---
 
@@ -132,6 +133,10 @@ SUBMIT BUILD
 ```
 build-all.bat
 ```
+
+This builds two variants:
+- **HEDIT.COM** — Mono (bold/dim/reverse only, no ANSI color)
+- **HEDIT-CL.COM** — Color (green addresses, cyan hex, yellow ASCII)
 
 ### Manual build
 

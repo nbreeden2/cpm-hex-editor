@@ -1,5 +1,5 @@
 
-                     HEDIT v1.0 Technical Reference
+                     HEDIT v1.01 Technical Reference
                    CP/M 2.2 Hex Editor for the IMSAI 8080
                    =======================================
 
@@ -74,6 +74,8 @@
       CPMFMT.PY    Python preprocessor (inlines includes, normalizes
                    CR+LF line endings, appends Ctrl-Z EOF marker)
       CLAUDE.md    Project rules and conventions
+      HEBUILD.PY   Variant build script (patches COLOR EQU in
+                   HEXSCR.MAC for mono/color builds)
 
 
     3. BUILD PROCESS
@@ -116,6 +118,21 @@
 
     IMPORTANT: After every .MAC file edit, run CPMFMT.PY on the
     modified file(s) before assembling.
+
+    Variant Build (mono and color):
+
+    HEDIT supports two build variants controlled by the COLOR EQU
+    in HEXSCR.MAC.  HEBUILD.PY automates patching this flag:
+
+      python HEBUILD.PY 0        Set COLOR=0 (mono)
+      python HEBUILD.PY 1        Set COLOR=1 (color)
+
+    After patching, rerun CPMFMT.PY and reassemble HEXSCR.MAC only
+    (all other modules are shared).  The build-all.bat script builds
+    both variants automatically:
+
+      HEDIT.COM      Mono (no ANSI color, bold/dim/reverse only)
+      HEDIT-CL.COM   Color (green addresses, cyan hex, yellow ASCII)
 
 
     4. MEMORY MAP
@@ -188,7 +205,7 @@
       Row  1: Info bar (filename, size, offset, mode flags)
       Row  2: Column header (dim text)
       Row  3-22: Hex data area (20 rows, 16 bytes each, 320 bytes)
-      Row 23: Separator line (80 '=' characters)
+      Row 23: Separator line (version string + '=' fill)
       Row 24: Status/message bar
 
     Data row format (72 visible characters):
@@ -200,7 +217,7 @@
       Col 56-57:  Gap (2 spaces)
       Col 58-73:  16 ASCII characters (20h-7Eh shown, else '.')
 
-    Color scheme (VT100 SGR codes):
+    Color scheme (VT100 SGR codes, color variant only):
       Address field:  Bold green
       Hex bytes:      Cyan
       ASCII field:    Yellow
@@ -208,6 +225,10 @@
       Separator:      Dim
       Info bar:       Reverse video
       Block marks:    Reverse video
+
+    In the mono variant (COLOR=0), address fields use bold and
+    hex/ASCII fields use normal text.  Dim, reverse, and bold
+    attributes are used in both variants.
 
 
     8. SELECTIVE REDRAW SYSTEM
@@ -261,7 +282,8 @@
 
     Binary files:
       Load: read 128-byte records via BF_FREAD, insert each byte via
-            GBINSRT, stop at CP/M EOF (1Ah) or read error.
+            GBINSRT, stop when BF_FREAD returns non-zero (end of
+            file).  All byte values including 1Ah are loaded.
       Save: read logical bytes via GBLOGRD, write 128-byte records
             via BF_FWRITE, pad final record with zeros.
 
