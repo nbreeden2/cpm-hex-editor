@@ -1,0 +1,8 @@
+# Build artifacts
+*.REL
+
+# Build logs
+*.log
+
+# Batch scripts (local use only)
+build-hdd.bat
