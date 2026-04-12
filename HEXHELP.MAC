@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEXHELP.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.01
+; VERSION: 1.02
 ; DATE:    1984-01-01
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -300,7 +300,7 @@ HLPCLR:  DB     ESC,'[0m',ESC,'[2J',ESC,'[H$'
 HLPCEL:  DB     ESC,'[K$'
 HLPNRM:  DB     ESC,'[0m$'
 HLPHDR:  DB     ESC,'[7m'
-         DB     ' HEDIT v1.01 Key Reference'
+         DB     ' HEDIT v1.02 Key Reference'
          DB     '                                       '
          DB     '              '
          DB     ESC,'[0m$'

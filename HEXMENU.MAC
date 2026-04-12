@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEXMENU.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.01
+; VERSION: 1.02
 ; DATE:    1984-01-01
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -11,7 +11,7 @@
 ;   and dispatches the selected item action on Enter.
 ;   Menu is dismissed without action on ESC or 'Q'.
 ;
-;   Menu items (9 total, shortcut letter in bold):
+;   Menu items (10 total, shortcut letter in bold):
 ;     1. [O]pen File
 ;     2. [S]ave File
 ;     3. Save [A]s...
@@ -20,7 +20,8 @@
 ;     6. [H]elp / About
 ;     7. [B]ase Offset...
 ;     8. [T]oggle Format (BIN/HEX)
-;     9. E[x]it
+;     9. Fi[l]l Block...
+;     0. E[x]it
 ;------------------------------------------------------------
 ; REVISION HISTORY:
 ;   1.0  1984-01-01  Initial release
@@ -200,6 +201,8 @@ MAXADDR EQU     0FFFFH      ; max displayable address
         EXTRN   GBMVTO          ; move cursor to offset HL
         EXTRN   GBTXEND         ; get text end -> HL
         EXTRN   GBCSOFF         ; get cursor offset -> HL
+        EXTRN   GBINSRT         ; insert byte at cursor
+        EXTRN   GBDELRT         ; delete byte right of cursor
         EXTRN   SRFIND          ; find (hex/ASCII prompt)
         EXTRN   HLPSHOW         ; help screen
         EXTRN   DOEXIT          ; exit handler
@@ -210,10 +213,10 @@ MAXADDR EQU     0FFFFH      ; max displayable address
 ;--- Menu geometry ----------------------------------------
 ; Box occupies rows MNUROW1..MNUROW2, cols MNUCOL1..MNUCOL2
 MNUROW1 EQU     6               ; top border row (1-based)
-MNUROW2 EQU     18              ; bottom border row
+MNUROW2 EQU     19              ; bottom border row
 MNUCOL1 EQU     25              ; left border col
 MNUCOL2 EQU     54              ; right border col
-MNUITMS EQU     9               ; number of menu items
+MNUITMS EQU     10              ; number of menu items
 MNUFROW EQU     MNUROW1+3       ; first item row (after border+title+sep)
 MNUTCOL EQU     MNUCOL1+2       ; text start column
 
@@ -258,12 +261,19 @@ MNULP:
         CPI     'j'
         JZ      MNUDN
 
-        ; Digit shortcut 1-9
+        ; Digit shortcut 1-9 -> index 0-8
         CPI     '1'
-        JC      MNULSC          ; below '1', check letters
+        JC      MNUSC0          ; below '1', check '0'
         CPI     '9'+1
         JNC     MNULSC          ; above '9', check letters
         SUI     '1'             ; 0-based index
+        STA     MNUSEL
+        JMP     MNUACT
+
+        ; Digit '0' -> index 9 (Exit)
+MNUSC0: CPI     '0'
+        JNZ     MNULSC          ; not '0', check letters
+        MVI     A,9
         STA     MNUSEL
         JMP     MNUACT
 
@@ -293,11 +303,14 @@ MNULSC: ORI     20H             ; force lowercase
         CPI     't'
         MVI     B,7             ; Toggle format
         JZ      MNULSL
+        CPI     'l'
+        MVI     B,8             ; fiLl block
+        JZ      MNULSL
         CPI     'x'
-        MVI     B,8             ; eXit
+        MVI     B,9             ; eXit
         JZ      MNULSL
         CPI     'e'
-        MVI     B,8             ; Exit
+        MVI     B,9             ; Exit
         JZ      MNULSL
         JMP     MNULP           ; unrecognised, ignore
 
@@ -498,7 +511,279 @@ MTFMSG: CALL    STATMSG
         STA     DIRTY
         RET
 
-;--- 9. Exit ----------------------------------------------
+;--- 9. Fill Block ----------------------------------------
+; Prompts for start address, end address, and fill byte.
+; Validates end >= start, handles buffer extension and
+; overwrite confirmation.
+;----------------------------------------------------------
+MNFILL:
+        ; Prompt for start address
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        CALL    STATCLR
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,FLSPMT
+        CALL    OUTSTR
+        CALL    RDHEX4          ; HL = start address
+        JC      MFLDNE          ; ESC = cancel
+        LDA     RDHCNT
+        ORA     A
+        JZ      MFLDNE          ; empty input = abort
+
+        SHLD    FLSTRT          ; save start address
+
+        ; Prompt for end address (continue on same line)
+        LXI     D,FLEPMT
+        CALL    OUTSTR
+        CALL    RDHEX4          ; HL = end address
+        JC      MFLDNE          ; ESC = cancel
+        LDA     RDHCNT
+        ORA     A
+        JZ      MFLDNE          ; empty input = abort
+
+        SHLD    FLEND           ; save end address
+
+        ; Validate: end >= start
+        XCHG                    ; DE = end
+        LHLD    FLSTRT          ; HL = start
+        ; Compare: if end < start, error
+        MOV     A,D
+        CMP     H
+        JC      MFLERR          ; end.H < start.H
+        JNZ     MFLVOK          ; end.H > start.H: ok
+        MOV     A,E
+        CMP     L
+        JC      MFLERR          ; end < start
+
+MFLVOK:
+        ; Prompt for fill byte (continue on same line)
+        LXI     D,FLBPMT
+        CALL    OUTSTR
+        CALL    RDHEX2          ; A = fill byte
+        JC      MFLDNE          ; ESC = cancel
+        STA     FLBYTE          ; save fill byte BEFORE checking count
+        LDA     RDHCNT
+        ORA     A
+        JZ      MFLDNE          ; empty input = abort
+
+        ; Get current buffer data length
+        CALL    GBTXEND         ; HL = TXEND
+        SHLD    FLOTXE          ; save original TXEND
+
+        ; Case 1: Start is beyond current data end
+        ; Need to fill gap from TXEND to FLSTRT-1 with 00
+        XCHG                    ; DE = TXEND
+        LHLD    FLSTRT          ; HL = start
+        ; Compare: if start > TXEND, gap exists
+        MOV     A,H
+        CMP     D
+        JC      MFLNO2          ; start.H < TXEND.H: no gap
+        JNZ     MFLGAP          ; start.H > TXEND.H: gap
+        MOV     A,L
+        CMP     E
+        JC      MFLNO2          ; start < TXEND: no gap
+        JZ      MFLNO2          ; start = TXEND: no gap
+        ; start > TXEND: gap exists
+
+MFLGAP:
+        ; Ask user about gap fill
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        CALL    STATCLR
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,FLGAPM
+        CALL    OUTSTR
+        MVI     C,BF_CONIN
+        CALL    BDOS
+        CPI     'Y'
+        JZ      MFLGPF
+        CPI     'y'
+        JZ      MFLGPF
+        JMP     MFLDNE          ; user declined
+
+MFLGPF:
+        ; Fill gap: move cursor to TXEND, insert 00 bytes
+        ; up to FLSTRT
+        LHLD    FLOTXE          ; original TXEND
+        CALL    GBMVTO          ; cursor to end of data
+        ; Count = FLSTRT - TXEND
+        LHLD    FLSTRT
+        XCHG                    ; DE = FLSTRT
+        LHLD    FLOTXE          ; HL = old TXEND
+        MOV     A,E
+        SUB     L
+        MOV     L,A
+        MOV     A,D
+        SBB     H
+        MOV     H,A             ; HL = gap count
+        SHLD    MFLCNT          ; save count
+
+MFLGLP:
+        LHLD    MFLCNT
+        MOV     A,H
+        ORA     L
+        JZ      MFLGDN          ; gap filled
+        XRA     A               ; A = 00
+        CALL    GBINSRT         ; insert 00 byte
+        CPI     0FFH
+        JZ      MFLFLL          ; buffer full
+        LHLD    MFLCNT
+        DCX     H
+        SHLD    MFLCNT
+        JMP     MFLGLP
+
+MFLGDN:
+        ; Update saved TXEND (gap bytes now part of data)
+        CALL    GBTXEND
+        SHLD    FLOTXE
+        JMP     MFLFIL          ; proceed to fill
+
+MFLNO2:
+        ; Case 2: Start is within existing data
+        ; Check if any existing data will be overwritten
+        LHLD    FLOTXE          ; HL = TXEND
+        XCHG                    ; DE = TXEND
+        LHLD    FLSTRT          ; HL = start
+        ; If start < TXEND, some data exists in range
+        MOV     A,H
+        CMP     D
+        JC      MFLOVW          ; start.H < TXEND.H: overlap
+        JNZ     MFLFIL          ; start.H > TXEND.H: no overlap
+        MOV     A,L
+        CMP     E
+        JC      MFLOVW          ; start < TXEND: overlap
+        JMP     MFLFIL          ; start >= TXEND: no overlap
+
+MFLOVW:
+        ; Confirm overwrite
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        CALL    STATCLR
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,FLOVWM
+        CALL    OUTSTR
+        MVI     C,BF_CONIN
+        CALL    BDOS
+        CPI     'Y'
+        JZ      MFLFIL
+        CPI     'y'
+        JZ      MFLFIL
+        JMP     MFLDNE          ; user declined
+
+MFLFIL:
+        ; Show "Fill running..." status
+        CALL    STATCLR
+        LXI     D,FLRUNM
+        CALL    STATMSG
+
+        ; Main fill loop
+        ; Move cursor to start offset
+        LHLD    FLSTRT
+        CALL    GBMVTO
+
+        ; Compute fill count = FLEND - FLSTRT + 1
+        LHLD    FLEND
+        XCHG                    ; DE = FLEND
+        LHLD    FLSTRT          ; HL = FLSTRT
+        MOV     A,E
+        SUB     L
+        MOV     L,A
+        MOV     A,D
+        SBB     H
+        MOV     H,A             ; HL = FLEND - FLSTRT
+        INX     H               ; +1 for inclusive end
+        SHLD    MFLCNT          ; total bytes to fill
+
+        ; Track current position for overwrite vs insert
+        LHLD    FLSTRT
+        SHLD    MFLPOS          ; current fill position
+
+MFLLP:
+        LHLD    MFLCNT
+        MOV     A,H
+        ORA     L
+        JZ      MFLOK           ; done filling
+
+        ; Check if current position < original TXEND (overwrite)
+        LHLD    MFLPOS
+        XCHG                    ; DE = current pos
+        LHLD    FLOTXE          ; HL = original TXEND
+        ; if pos < TXEND: overwrite (delete + insert)
+        MOV     A,D
+        CMP     H
+        JC      MFLOVR          ; pos.H < TXEND.H: overwrite
+        JNZ     MFLINS          ; pos.H > TXEND.H: insert
+        MOV     A,E
+        CMP     L
+        JC      MFLOVR          ; pos < TXEND: overwrite
+        JMP     MFLINS          ; pos >= TXEND: insert
+
+MFLOVR:
+        ; Overwrite: delete right then insert fill byte
+        CALL    GBDELRT         ; delete byte at cursor
+        LDA     FLBYTE
+        CALL    GBINSRT         ; insert fill byte
+        CPI     0FFH
+        JZ      MFLFLL          ; buffer full (shouldn't happen)
+        JMP     MFLNXT
+
+MFLINS:
+        ; Insert: just insert fill byte
+        LDA     FLBYTE
+        CALL    GBINSRT
+        CPI     0FFH
+        JZ      MFLFLL          ; buffer full
+        ;JMP     MFLNXT         ; fall through
+
+MFLNXT:
+        ; Advance position and decrement count
+        LHLD    MFLPOS
+        INX     H
+        SHLD    MFLPOS
+        LHLD    MFLCNT
+        DCX     H
+        SHLD    MFLCNT
+        JMP     MFLLP
+
+MFLOK:
+        ; Move cursor to start of fill area
+        LHLD    FLSTRT
+        CALL    GBMVTO
+        MVI     A,1
+        STA     DIRTY
+        CALL    STATCLR
+        LXI     D,FLDONE
+        JMP     STATMSG
+
+MFLERR:
+        ; End < Start error
+        CALL    STATCLR
+        LXI     D,FLERMG
+        JMP     STATMSG
+
+MFLFLL:
+        ; Buffer full error
+        LHLD    FLSTRT
+        CALL    GBMVTO
+        MVI     A,1
+        STA     DIRTY
+        CALL    STATCLR
+        LXI     D,FLFULL
+        JMP     STATMSG
+
+MFLDNE:
+        RET
+
+;--- 0. Exit ----------------------------------------------
 MNQUIT:
         JMP     DOEXIT
 
@@ -680,9 +965,9 @@ RDH2LP: MVI     E,0FFH
         JZ      RDH2DN          ; done
 
         CPI     BS
-        JZ      RDHBS           ; backspace (shared)
+        JZ      RDH2BS          ; backspace (RDHEX2 own handler)
         CPI     DEL
-        JZ      RDHBS
+        JZ      RDH2BS
 
         ; Valid hex digit?
         CPI     '0'
@@ -741,6 +1026,50 @@ RDH2EC: MOV     E,A
         JMP     RDH2LP
 
 RDH2FL: POP     PSW
+        JMP     RDH2LP
+
+RDH2BS: ; Backspace for RDHEX2 (same logic as RDHBS but returns to RDH2LP)
+        LDA     RDHCNT
+        ORA     A
+        JZ      RDH2LP          ; nothing to erase
+        DCR     A
+        STA     RDHCNT
+        ; Shift accumulator right 4 bits
+        LHLD    RDHVAL
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        MOV     B,A             ; B = H >> 4
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0F0H
+        MOV     C,A             ; C = (H & 0F) << 4
+        MOV     A,L
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        ORA     C
+        MOV     L,A             ; L = ((H & 0F) << 4) | (L >> 4)
+        MOV     H,B             ; H = H >> 4
+        SHLD    RDHVAL
+        ; Erase character on screen: BS, space, BS
+        MVI     E,BS
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        MVI     E,' '
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        MVI     E,BS
+        MVI     C,BF_CONOUT
+        CALL    BDOS
         JMP     RDH2LP
 
 RDH2DN: ; Return low byte in A
@@ -959,7 +1288,9 @@ MNTX7:  DB      '7. ',ESC,'[1m','B',ESC,'[0m'
         DB      'ase Offset...         $'
 MNTX8:  DB      '8. ',ESC,'[1m','T',ESC,'[0m'
         DB      'oggle Format (B/H)    $'
-MNTX9:  DB      '9. E',ESC,'[1m','x',ESC,'[0m'
+MNTX9:  DB      '9. Fi',ESC,'[1m','l',ESC,'[0m'
+        DB      'l Block...           $'
+MNTX0:  DB      '0. E',ESC,'[1m','x',ESC,'[0m'
         DB      'it                   $'
 
 ; Prompt strings
@@ -970,6 +1301,16 @@ BOFPMT: DB      'Base offset (00-FF): $'
 BOFSET: DB      'Base offset set.$'
 MTFBIN: DB      'Format: Binary$'
 MTFHEX: DB      'Format: Intel HEX$'
+; Fill prompts and messages
+FLSPMT: DB      'Fill start (hex): $'
+FLEPMT: DB      ' End: $'
+FLBPMT: DB      ' Byte: $'
+FLERMG: DB      'End < Start!$'
+FLOVWM: DB      'Overwrite existing data? (Y/N) $'
+FLGAPM: DB      'Fill gap from data end? (Y/N) $'
+FLFULL: DB      'Buffer full!$'
+FLRUNM: DB      'Fill running...$'
+FLDONE: DB      'Fill complete.$'
 
 ; Dispatch table (CSEG): order matches MNUITMS
 MNUTBL:
@@ -981,7 +1322,8 @@ MNUTBL:
         DW      MNHELP          ; 5 Help / About
         DW      MNBOFF          ; 6 Base Offset
         DW      MNTFMT          ; 7 Toggle Format
-        DW      MNQUIT          ; 8 Exit
+        DW      MNFILL          ; 8 Fill Block
+        DW      MNQUIT          ; 9 Exit
 
 ; Item text pointer table (CSEG)
 MNUTXP:
@@ -994,6 +1336,7 @@ MNUTXP:
         DW      MNTX7
         DW      MNTX8
         DW      MNTX9
+        DW      MNTX0
 
 ;=============================================================
 ; DATA SEGMENT
@@ -1015,6 +1358,14 @@ MNUINP: DS      16
 RDHVAL: DW      0               ; hex accumulator
 RDHCNT: DB      0               ; digit count
 RDHDIG: DB      0               ; current digit value
+
+; Fill block working variables
+FLSTRT: DW      0               ; fill start address
+FLEND:  DW      0               ; fill end address
+FLBYTE: DB      0               ; fill byte value
+FLOTXE: DW      0               ; original TXEND before fill
+MFLCNT: DW      0               ; fill loop counter
+MFLPOS: DW      0               ; current fill position
 
         END
 
