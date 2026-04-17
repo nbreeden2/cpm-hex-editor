@@ -4,17 +4,18 @@
 
 - **Intel 8080 assembly ONLY** — no Z80 instructions (no EX, DJNZ, JR, IX/IY, etc.)
 - Assembler: **M80** (Microsoft Macro-80). Linker: **L80**.
-- After every .MAC file edit, run: `python CPMFMT.PY <file>`
-- CPMFMT.PY inlines HEDIT.INC, normalizes CR+LF, appends Ctrl-Z EOF.
+- After every .MAC or .INC file edit, run: `python CPMFMT.PY <file>`
+- CPMFMT.PY normalizes CR+LF, appends Ctrl-Z EOF (.MAC only, not .INC).
+- .MAC files use M80 `INCLUDE` to pull in .INC files at assemble time.
 - BDOS calls clobber ALL registers. Any value needed across CALL must be saved to memory or stack.
 - Version shown via ESC menu -> "About". Update in HEXMENU.MAC.
 - Version also in: HEXHELP.MAC (help header), HEXSCR.MAC (separator SPRVER).
-- Color variant controlled by `COLOR EQU` in HEXSCR.MAC (0=mono, 1=color).
+- Color variant controlled by `COLOR EQU` in HECONFIG.INC (0=mono, 1=color).
 
 ## Build
 
 ```
-python CPMFMT.PY                    # preprocess all .MAC
+python CPMFMT.PY                    # format all .MAC and .INC
 M80 =<module>                       # assemble (one per .MAC)
 L80 HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
 ```
@@ -22,11 +23,11 @@ L80 HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXH
 ### Variant Build (mono + color)
 
 ```
-python HEBUILD.PY 0                 # patch COLOR=0 (mono)
-python HEBUILD.PY 1                 # patch COLOR=1 (color)
+python HEBUILD.PY 0                 # patch COLOR=0 in HECONFIG.INC (mono)
+python HEBUILD.PY 1                 # patch COLOR=1 in HECONFIG.INC (color)
 ```
 
-After patching, rerun `CPMFMT.PY HEXSCR.MAC` and reassemble HEXSCR only.
+After patching, rerun `CPMFMT.PY HECONFIG.INC` and reassemble HEXSCR only.
 `build-all.bat` automates this, producing HEDIT.COM (mono) and HEDIT-CL.COM (color).
 
 ## Screen Layout (VT100/ANSI, 80x24)

@@ -1,7 +1,7 @@
-"""HEBUILD.PY - Patch COLOR EQU value in HEXSCR.MAC for variant builds.
+"""HEBUILD.PY - Patch COLOR EQU value in HECONFIG.INC for variant builds.
 
 Usage: python HEBUILD.PY <color>
-  color  - 0 or 1 (COLOR EQU value in HEXSCR.MAC)
+  color  - 0 or 1 (COLOR EQU value in HECONFIG.INC)
 """
 
 import re
@@ -37,7 +37,7 @@ def main():
         print(f'ERROR: color must be 0 or 1, got {color}')
         sys.exit(1)
 
-    ok = patch_equ('HEXSCR.MAC', 'COLOR', color)
+    ok = patch_equ('HECONFIG.INC', 'COLOR', color)
 
     label = 'color' if color else 'mono'
     print(f'Patched: {label}')

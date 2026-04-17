@@ -16,9 +16,9 @@ if exist HEDIT.COM   del HEDIT.COM 2>nul
 if exist HEDIT-CL.COM del HEDIT-CL.COM 2>nul
 if exist *.REL       del *.REL 2>nul
 
-REM --- Format and assemble all non-variant modules (once) ---
+REM --- Format all source files (once) ---
 echo Formatting source files...
-python CPMFMT.PY HEDIT.MAC HEXKEY.MAC HEXGAP.MAC HEXIO.MAC HEXMENU.MAC HEXSRCH.MAC HEXBLK.MAC HEXKBND.MAC HEXVIRT.MAC HEXHELP.MAC
+python CPMFMT.PY
 if errorlevel 1 goto fail
 
 echo Assembling shared modules...
@@ -34,7 +34,7 @@ echo.
 echo --- Variant 1/2: HEDIT.COM (mono) ---
 python HEBUILD.PY 0
 if errorlevel 1 goto fail
-python CPMFMT.PY HEXSCR.MAC
+python CPMFMT.PY HECONFIG.INC
 if errorlevel 1 goto fail
 cpmulator M80.COM =HEXSCR
 if errorlevel 1 goto fail
@@ -47,7 +47,7 @@ echo.
 echo --- Variant 2/2: HEDIT-CL.COM (color) ---
 python HEBUILD.PY 1
 if errorlevel 1 goto fail
-python CPMFMT.PY HEXSCR.MAC
+python CPMFMT.PY HECONFIG.INC
 if errorlevel 1 goto fail
 cpmulator M80.COM =HEXSCR
 if errorlevel 1 goto fail
@@ -58,7 +58,7 @@ echo Built HEDIT-CL.COM (color)
 
 REM --- Restore source to default (mono) ---
 python HEBUILD.PY 0
-python CPMFMT.PY HEXSCR.MAC
+python CPMFMT.PY HECONFIG.INC
 
 REM --- Rename mono back to HEDIT.COM ---
 copy /y HEDIT-MONO.COM HEDIT.COM >nul

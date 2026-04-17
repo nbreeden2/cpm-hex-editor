@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEDIT.INC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.02
+; VERSION: 1.03
 ; DATE:    1984-01-01
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -149,4 +149,3 @@ CLIPMAX EQU     2048        ; clipboard buffer size
 SRCHMAX EQU     64          ; max search pattern length
 RECSIZ  EQU     128         ; CP/M record size
 MAXADDR EQU     0FFFFH      ; max displayable address
-
