@@ -3,7 +3,7 @@
 **Platform:** CP/M 2.2, Intel 8080
 **Assembler:** Microsoft M80 / L80
 **Terminal:** VT100 / ANSI
-**Version:** 1.01
+**Version:** 1.02
 
 ---
 
@@ -103,7 +103,8 @@ Each data row:
 | 6 | Help / About |
 | 7 | Base Offset... |
 | 8 | Toggle Format (BIN/HEX) |
-| 9 | Exit |
+| 9 | Fill Block... |
+| 0 | Exit |
 
 ---
 

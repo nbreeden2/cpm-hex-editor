@@ -32,7 +32,7 @@ After patching, rerun `CPMFMT.PY HEXSCR.MAC` and reassemble HEXSCR only.
 ## Screen Layout (VT100/ANSI, 80x24)
 
 ```
-Row  1: INFOBAR  — filename, file size, offset (hex+dec), INS/OVR, HEX/ASC mode
+Row  1: INFOBAR  — filename, file size (hex), offset (hex), INS/OVR, HEX/ASC mode
 Row  2: COLHDR   — column header "Offset  00 01 02 ... 0F  ASCII"
 Row  3-22: HEX AREA — 20 rows x 16 bytes = 320 bytes visible
          "0000: 41 42 43 44 45 46 47 48  49 4A 4B 4C 4D 4E 4F 50  ABCDEFGHIJKLMNOP"
@@ -66,7 +66,7 @@ INFOBAR and CURPOS always run at MLDONE regardless of flags.
 | HEDIT.MAC | Entry point, main loop, action dispatch | INSMODE, DIRTY, CURBDP, TPATOP, DOEXIT |
 | HEXSCR.MAC | Terminal I/O, hex screen rendering | SCRINIT, SCRDRAW, SCREDCL, INFOBAR, CURPOS, STATMSG, OUTSTR, OUTCHAR, CURGOTO |
 | HEXKEY.MAC | Key input, VT100 ESC decode | GETKEY |
-| HEXGAP.MAC | Gap buffer byte engine | GBINIT, GBINSRT, GBDLFT, GBDELRT, GBMVLT, GBMVRT, GBMVTOP, GBMVEND, GBRDBLK |
+| HEXGAP.MAC | Gap buffer byte engine | GBINIT, GBINSRT, GBDLFT, GBDELRT, GBMVLT, GBMVRT, GBMVTP, GBMVEND, GBRDBLK |
 | HEXIO.MAC | File load/save, Intel HEX format | FIOPEN, FISAVE, FIPROMPT |
 | HEXMENU.MAC | ESC menu overlay | MNUSHOW |
 | HEXSRCH.MAC | Hex/ASCII search | SRFIND, SRFNDNX |

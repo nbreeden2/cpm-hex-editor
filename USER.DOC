@@ -1,5 +1,5 @@
 
-                        HEDIT v1.01 User Manual
+                        HEDIT v1.02 User Manual
                    CP/M 2.2 Hex Editor for the IMSAI 8080
                    =======================================
 
@@ -105,7 +105,7 @@
                      in reverse video as you move.  Second press sets
                      the end of the block.  Third press clears the mark.
 
-    ^KC              Copy marked block to clipboard
+    ^KC or ^O        Copy marked block to clipboard
     ^KD              Delete marked block
     ^KP              Paste clipboard at cursor position
 
@@ -167,7 +167,7 @@
 
     Press ESC or F4 to open the menu.  Navigate with:
       - Arrow keys (Up/Down) and Enter to select
-      - Number keys 1-9 for direct selection
+      - Number keys 1-9, 0 for direct selection
       - Shortcut letter (shown in bold)
 
     Menu items:
@@ -179,14 +179,15 @@
       6. [H]elp / About      Show key reference and version
       7. [B]ase Offset       Set Intel HEX base address
       8. [T]oggle Format     Switch between Binary and Intel HEX
-      9. E[x]it              Exit (prompts to save if modified)
+      9. Fi[l]l Block...    Fill a range with a byte value
+      0. E[x]it              Exit (prompts to save if modified)
 
     Press ESC or Q to close the menu without selecting.
 
 
     12. EXITING
 
-    ESC -> Exit (or press 9 or X in the menu)
+    ESC -> Exit (or press 0 or X in the menu)
 
     If the buffer has been modified, HEDIT asks:
       "Save changes? (Y/N/Esc)"
