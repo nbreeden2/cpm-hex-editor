@@ -3,7 +3,7 @@
 **Platform:** CP/M 2.2, Intel 8080
 **Assembler:** Microsoft M80 / L80
 **Terminal:** VT100 / ANSI
-**Version:** 1.03
+**Version:** 1.04
 
 ---
 
