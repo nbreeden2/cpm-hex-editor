@@ -71,7 +71,7 @@ SGRYEL:  DB     ESC,'[','0','m','$'          ; reset (mono)
 
 ;--- Separator version + build string ------------------
 SPRVER:  DB     ' HEDIT v1.03 ','$'
-SPRBLD:  DB     'Build 002 ','$'
+SPRBLD:  DB     'Build 003 ','$'
 SPRLEN  EQU     24              ; length of SPRVER + SPRBLD (excluding $)
 
 ;--- Info bar label strings ---------------------------
