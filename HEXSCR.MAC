@@ -29,6 +29,7 @@
         EXTRN   REROWS          ; runtime edit row count
         EXTRN   RSEPR           ; runtime separator row
         EXTRN   RSTAT           ; runtime status row
+        EXTRN   RBYTPG          ; runtime bytes per page
 
         PUBLIC  SCRINIT         ; init/clear screen
         PUBLIC  SCRDRAW         ; full screen redraw
@@ -46,6 +47,7 @@
         PUBLIC  ATTRON          ; reverse video on ($-string)
         PUBLIC  ATROFF          ; reverse video off ($-string)
         PUBLIC  CLRTOE          ; clear to end of line ($-string)
+        PUBLIC  DETSIZ          ; detect terminal rows via DSR
 
 ;--- ESC sequence string constants --------------------
 ESCSTR:  DB     ESC,'[','$'     ; ESC [  (CSI intro)
@@ -74,7 +76,7 @@ SGRYEL:  DB     ESC,'[','0','m','$'          ; reset (mono)
 
 ;--- Separator version + build string ------------------
 SPRVER:  DB     ' HEDIT v1.03 ','$'
-SPRBLD:  DB     'Build 003 ','$'
+SPRBLD:  DB     'Build 004 ','$'
 SPRLEN  EQU     24              ; length of SPRVER + SPRBLD (excluding $)
 
 ;--- Info bar label strings ---------------------------
@@ -1276,9 +1278,172 @@ HXDEC:  ADI     '0'             ; 0-9
         JMP     OUTCHAR
 
 ;=============================================================
+; DETSIZ - Auto-detect terminal row count via VT100 DSR.
+;
+;   Sequence: ESC 7 (save cursor), ESC[999;999H (move to far
+;   corner), ESC[6n (request cursor position). The terminal
+;   replies with ESC[rows;colsR, which we collect into DSCPBUF
+;   and parse. After parsing we restore the cursor (ESC 8).
+;
+;   On success: RSTAT = rows clamped to [24,76],
+;               RSEPR = RSTAT - 1, REROWS = RSTAT - 4,
+;               RBYTPG = REROWS * 16.
+;   On timeout or parse failure: cursor restored, runtime
+;   variables left at their compile-time defaults (24-row).
+;
+; Entry:  (none)
+; Exit:   RSTAT/RSEPR/REROWS/RBYTPG possibly updated;
+;         all regs clobbered.
+;=============================================================
+DETSIZ:
+        ; Phase 1: send save-cursor + far-corner move + DSR
+        LXI     H,DSALL
+        CALL    DTSOUT
+
+        ; Phase 2: collect CPR response with inter-byte timeout
+        XRA     A
+        STA     DSCPWR          ; reset write index
+DTCOLL: LXI     B,10000         ; ~inter-byte timeout counter
+DTCOLP: PUSH    B
+        MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        POP     B
+        ORA     A
+        JZ      DTCNOB          ; no char this tick
+        STA     DSCPTM          ; save received byte
+        PUSH    B
+        PUSH    H
+        LDA     DSCPWR
+        MOV     L,A
+        MVI     H,0
+        LXI     D,DSCPBUF
+        DAD     D               ; HL = &DSCPBUF[DSCPWR]
+        LDA     DSCPTM
+        MOV     M,A
+        LDA     DSCPWR
+        INR     A
+        STA     DSCPWR
+        POP     H
+        POP     B
+        JMP     DTCOLL          ; restart inter-byte timer
+DTCNOB: DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     DTCOLP          ; keep polling
+
+        ; Phase 3: parse DSCPBUF for '[' <rows> ';' <cols> 'R'
+        LXI     H,DSCPBUF
+        LDA     DSCPWR
+        ORA     A
+        JZ      DTFAIL          ; nothing collected
+        MOV     B,A             ; B = byte count
+DTPBRK: MOV     A,M
+        CPI     '['
+        JZ      DTPFND
+        INX     H
+        DCR     B
+        JNZ     DTPBRK
+        JMP     DTFAIL
+DTPFND: INX     H
+        DCR     B
+        JZ      DTFAIL
+        LXI     D,0             ; DE = row accumulator
+DTPROW: MOV     A,M
+        CPI     ';'
+        JZ      DTPRGOT
+        SUI     '0'
+        MOV     C,A
+        PUSH    H
+        MOV     H,D
+        MOV     L,E
+        PUSH    B
+        MOV     B,H
+        MOV     C,L
+        DAD     H
+        DAD     H
+        DAD     B
+        DAD     H               ; HL = acc * 10
+        POP     B
+        MVI     B,0             ; BC = C (digit)
+        DAD     B               ; HL = acc*10 + digit
+        MOV     D,H
+        MOV     E,L             ; DE = new accumulator
+        POP     H
+        INX     H
+        DCR     B
+        JNZ     DTPROW
+        JMP     DTFAIL
+DTPRGOT:
+        ; DE = parsed rows. Phase 4: restore cursor, clamp,
+        ; write runtime variables.
+        PUSH    D               ; save row count
+        LXI     H,DTRST
+        CALL    DTSOUT
+        POP     D
+
+        ; Clamp DE to [24, 76]. DE.H should be 0 for any sane
+        ; terminal; if not, treat as out of range -> clamp high.
+        MOV     A,D
+        ORA     A
+        JNZ     DTRMXC          ; D != 0 -> very large -> clamp 76
+        MOV     A,E
+        CPI     24
+        JNC     DTRMXC2         ; rows >= 24, test upper bound
+        MVI     A,24            ; rows < 24 -> clamp low
+        JMP     DTROK
+DTRMXC2:
+        CPI     77
+        JC      DTROK           ; rows < 77 -> keep
+DTRMXC: MVI     A,76            ; rows >= 77 or >255 -> clamp high
+DTROK:  STA     RSTAT           ; RSTAT = rows
+        DCR     A
+        STA     RSEPR           ; RSEPR = rows - 1
+        LDA     RSTAT
+        SUI     4
+        STA     REROWS          ; REROWS = rows - 4
+        ; RBYTPG = REROWS * 16
+        MOV     L,A
+        MVI     H,0
+        DAD     H               ; *2
+        DAD     H               ; *4
+        DAD     H               ; *8
+        DAD     H               ; *16
+        SHLD    RBYTPG
+        RET
+
+DTFAIL: ; Parse/timeout: restore cursor, leave defaults intact.
+        LXI     H,DTRST
+        CALL    DTSOUT
+        RET
+
+;--- DTSOUT: emit NUL-terminated string at HL via BDOS RAWIO ---
+DTSOUT: MOV     A,M
+        ORA     A
+        RZ
+        MOV     E,A
+        PUSH    H
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        POP     H
+        INX     H
+        JMP     DTSOUT
+
+;--- DETSIZ string constants (NUL-terminated) ---
+DSALL:  DB      ESC,'7'                   ; save cursor
+        DB      ESC,'[','9','9','9',';','9','9','9','H'
+        DB      ESC,'[','6','n'           ; DSR cursor position
+        DB      0
+DTRST:  DB      ESC,'8',0                 ; restore cursor
+
+;=============================================================
 ; DSEG - Working variables
 ;=============================================================
         DSEG
+
+DSCPBUF: DS     16              ; DSR collect buffer
+DSCPWR:  DB     0               ; DSR write index
+DSCPTM:  DB     0               ; DSR received byte scratch
 
 ROWBUF:  DS     16              ; buffer for one row of data
 SDROW:   DB     0               ; current draw row (0-based)

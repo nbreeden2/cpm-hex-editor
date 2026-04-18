@@ -53,6 +53,7 @@
         EXTRN   KBINIT          ; key binding init
         EXTRN   GETKEY          ; read next key
         EXTRN   SCRINIT         ; screen init/clear
+        EXTRN   DETSIZ          ; detect terminal rows via DSR
         EXTRN   SCRDRAW         ; full screen redraw
         EXTRN   SCREDCL         ; redraw current row only
         EXTRN   STATMSG         ; status bar message
@@ -171,6 +172,10 @@ BFINLP: MVI     M,' '
 
         ; Initialize key bindings table
         CALL    KBINIT
+
+        ; Auto-detect terminal rows before drawing chrome so
+        ; RSTAT/RSEPR/REROWS/RBYTPG reflect the real screen.
+        CALL    DETSIZ
 
         ; Initialize and clear screen, draw chrome
         CALL    SCRINIT
