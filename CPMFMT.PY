@@ -1,7 +1,7 @@
 """
 CPMFMT.PY - Convert source files to CP/M text format.
 
-For .MAC and .SUB files:
+For .MAC, .SUB, and .DOC files:
   - Normalises line endings to CR+LF.
   - Appends a Ctrl-Z (0x1A) EOF marker.
   - INCLUDE directives are left intact for M80 to process natively.
@@ -14,7 +14,7 @@ For .INC files:
 Safe to run multiple times: idempotent.
 
 Usage:
-    python CPMFMT.PY          (processes all .MAC, .INC, .SUB in cwd)
+    python CPMFMT.PY          (processes all .MAC, .INC, .SUB, .DOC in cwd)
     python CPMFMT.PY file...  (processes named files only)
 """
 
@@ -53,7 +53,8 @@ def convert(path):
 if len(sys.argv) > 1:
     targets = sys.argv[1:]
 else:
-    targets = glob.glob("*.MAC") + glob.glob("*.INC") + glob.glob("*.SUB")
+    targets = (glob.glob("*.MAC") + glob.glob("*.INC")
+               + glob.glob("*.SUB") + glob.glob("*.DOC"))
 
 if not targets:
     print("No files found.")

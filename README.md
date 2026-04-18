@@ -2,38 +2,50 @@
 
 **Platform:** CP/M 2.2, Intel 8080
 **Assembler:** Microsoft M80 / L80
-**Terminal:** VT100 / ANSI
 **Version:** 1.04
 
 ---
 
 ## Overview
 
-HEDIT is a full-screen hex editor for CP/M 2.2 written in Intel 8080 assembly language. It displays file contents in standard hex editor format with address, hex bytes, and ASCII representation. It can load and save both raw binary files and Intel HEX format files.
+HEDIT is a full-screen hex editor for CP/M 2.2 written in Intel 8080 assembly language. It displays file contents in the standard hex editor format (address, hex bytes, ASCII) and can load and save both raw binary files and Intel HEX files.
+
+HEDIT is distributed as five pre-built variants, one per supported terminal:
+
+| Binary | Terminal | Notes |
+|---|---|---|
+| `HEDIT.COM` | VT100 / ANSI | Mono build — bold / dim / reverse only |
+| `HEDIT-CL.COM` | VT100 / ANSI | Colour build — green addresses, cyan hex, yellow ASCII |
+| `HEDIT-52.COM` | DEC VT52 (and clones) | Reverse-video via `ESC p` / `ESC q` on clones |
+| `HEDIT-AD.COM` | Lear Siegler ADM-31 | Uses WordStar diamond for cursor (arrows collide) |
+| `HEDIT-CR.COM` | Cromemco 3102 | Accepts both native `ESC A/B/C/D` and emulator CSI |
+
+The VT100 builds auto-detect the terminal's real row count via DSR and expand the hex area to fill it (24 to 76 rows). The non-VT100 builds assume a fixed 24 rows.
 
 ### Features
 
-- Full-screen hex display: 20 rows x 16 bytes (320 bytes visible)
 - Dual editing modes: hex (0-9, A-F nibble input) and ASCII (printable character input)
 - Insert and overwrite modes
 - Raw binary and Intel HEX format support (auto-detected on load)
 - Hex and ASCII pattern search with wrap-around
 - Block mark, copy, delete, and paste operations
 - Virtual buffer support for files larger than available RAM
-- User-configurable key bindings via HEDIT.KEY
-- WordStar-compatible control keys with VT100/ANSI arrow key support
+- User-configurable key bindings via `HEDIT.KEY`
+- WordStar-compatible control keys plus terminal-native arrow keys on VT100 / VT52 / Cromemco 3102
 
 ---
 
 ## Screen Layout
 
 ```
-Row  1: Info bar — filename, size (hex), offset (hex), INS/OVR, HEX/ASC
-Row  2: Column headers — Offset  00 01 02 ... 0F  ASCII
-Row  3-22: Hex display — 20 rows of 16 bytes each
-Row 23: Separator (version string + '=' fill)
-Row 24: Status / prompts
+Row 1:          Info bar      — filename, size (hex), offset (hex), INS/OVR, HEX/ASC
+Row 2:          Column header — Offset  00 01 02 ... 0F  ASCII
+Rows 3..N-1:    Hex data area — N-4 rows of 16 bytes each
+Row N-1:        Separator     — version string + '=' fill
+Row N:          Status / prompts
 ```
+
+On a 24-row terminal: N = 24, hex area spans rows 3-22 (20 rows / 320 bytes visible). On a 40-row terminal: N = 40, hex area spans rows 3-38 (36 rows / 576 bytes visible).
 
 Each data row:
 ```
@@ -52,12 +64,14 @@ Each data row:
 | `^X` / Down arrow | Down 16 bytes (one row) |
 | `^S` / Left arrow | Left 1 byte |
 | `^D` / Right arrow | Right 1 byte |
-| `^R` / PgUp | Up 320 bytes (one page) |
-| `^C` / PgDn | Down 320 bytes (one page) |
+| `^R` / PgUp | Up one page |
+| `^C` / PgDn | Down one page |
 | `^QS` / Home | Start of current row |
 | `^QD` / End | End of current row |
 | `^QR` | Top of file (offset 0) |
 | `^QC` | End of file |
+
+Page size depends on terminal height: 320 bytes on a 24-row terminal, more on taller ones.
 
 ### Editing
 
@@ -88,6 +102,10 @@ Each data row:
 | `^KX` / `^KQ` | Exit (with save prompt) |
 | `^L` / F1 | Find next |
 | ESC / F4 | Open menu |
+
+### Terminal-specific arrow-key notes
+
+On **ADM-31** and **Cromemco 3102**, the arrow keys transmit raw control characters (`^K` / `^J` / `^H` / `^L`) that collide with the WordStar block prefix, backspace, and find-next bindings. On those terminals, use the diamond keys (`^E` / `^X` / `^S` / `^D`, `^R` / `^C`) for cursor motion. **Cromemco 3102** additionally decodes the native `ESC A/B/C/D` arrow sequences and VT100-style `ESC [ A/B/C/D`, so an emulator sending either form works.
 
 ---
 
@@ -123,32 +141,45 @@ Intel HEX record format: `:LLAAAATT[DD...]CC`
 
 ## Building
 
-### On CP/M (via SUBMIT)
-
-```
-SUBMIT BUILD
-```
-
-### On host system (via cpmulator)
+### Host build (cpmulator, Python)
 
 ```
 build-all.bat
 ```
 
-This builds two variants:
-- **HEDIT.COM** — Mono (bold/dim/reverse only, no ANSI color)
-- **HEDIT-CL.COM** — Color (green addresses, cyan hex, yellow ASCII)
+Produces all five variants in one run. Requires `cpmulator.exe` on the PATH and Python 3 for `CPMFMT.PY` / `HEBUILD.PY`.
 
-### Manual build
+### CP/M-native build (SUBMIT)
+
+Every variant has its own self-contained `.SUB` file. Each one rebuilds `HEPATCH.COM`, sets `COLOR` in `HECONFIG.INC`, clears `*.REL`, assembles every required module, links to `TEMP.COM`, then renames the result to the target name:
+
+| Variant | SUBMIT command |
+|---|---|
+| VT100 mono | `SUBMIT HEDIT` |
+| VT100 colour | `SUBMIT HEDIT-CL` |
+| VT52 | `SUBMIT HEDIT-52` |
+| ADM-31 | `SUBMIT HEDIT-AD` |
+| Cromemco 3102 | `SUBMIT HEDIT-CR` |
+
+Housekeeping:
 
 ```
-python CPMFMT.PY *.MAC          # preprocess
-M80 =HEDIT                      # assemble each module
-M80 =HEXSCR
-M80 =HEXKEY
+SUBMIT CLEAN          REM remove *.REL and TEMP.COM
+SUBMIT HEPATCH        REM rebuild just HEPATCH.COM
+```
+
+### Manual (build one variant by hand)
+
+```
+python CPMFMT.PY           # normalise line endings and EOF markers
+python HEBUILD.PY 0        # set COLOR=0 (mono) or 1 (colour)
+python CPMFMT.PY HECONFIG.INC
+M80 =HEDIT
+M80 =HEXSCR        (or =HEVT52 / =HEADM31 / =HEC3102 for non-VT100)
+M80 =HEXKEY        (or =HEADM31K / =HEC3102K)
 M80 =HEXGAP
 M80 =HEXIO
-M80 =HEXMENU
+M80 =HEXMENU       (or =HEXMNVT for non-VT100)
 M80 =HEXSRCH
 M80 =HEXBLK
 M80 =HEXKBND
@@ -157,26 +188,48 @@ M80 =HEXHELP
 L80 HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
 ```
 
-**Note:** HEXHELP must be linked last — `BMDATEND EQU $` is at the end of its CSEG section.
+Substitute screen driver / key module / menu module as shown in `build-all.bat` for the non-VT100 variants. M80 pulls in `HEDIT.INC` (and `HECONFIG.INC` for HEXSCR) via M80's native `INCLUDE` directive; `CPMFMT.PY` only normalises line endings and EOF markers.
+
+**Note:** `HEXHELP` must be linked last — `BMDATEND EQU $` is at the end of its CSEG section and marks the bottom of the gap buffer.
 
 ---
 
 ## Module Structure
 
-| Source File | Purpose |
-|-------------|---------|
-| `HEDIT.MAC` | Entry point, main loop, hex/ASCII input, action dispatch |
-| `HEDIT.INC` | Shared equates (inlined by CPMFMT.PY) |
-| `HEXSCR.MAC` | VT100 output, hex screen rendering, info bar, cursor positioning |
-| `HEXKEY.MAC` | Key input, VT100 escape sequence decoder |
+### Shared modules (all variants)
+
+| File | Purpose |
+|---|---|
+| `HEDIT.MAC` | Entry point, main loop, action dispatch, runtime dimensions |
+| `HEDIT.INC` | Shared equates (pulled in by M80 `INCLUDE`) |
+| `HECONFIG.INC` | Compile-time config (`COLOR` EQU, patched by HEPATCH) |
 | `HEXGAP.MAC` | Byte-oriented gap buffer engine |
 | `HEXIO.MAC` | File load/save, Intel HEX format parser/writer |
-| `HEXMENU.MAC` | ESC menu overlay |
 | `HEXSRCH.MAC` | Hex and ASCII pattern search |
 | `HEXBLK.MAC` | Block mark, copy, delete, paste |
-| `HEXKBND.MAC` | Key binding loader (HEDIT.KEY) |
+| `HEXKBND.MAC` | Key binding loader (`HEDIT.KEY`) |
 | `HEXVIRT.MAC` | Virtual buffer I/O for large files |
-| `HEXHELP.MAC` | Help screen overlay, BMDATEND marker |
+| `HEXHELP.MAC` | Help screen overlay, `BMDATEND` marker |
+
+### Terminal-specific modules
+
+| Role | VT100 | VT52 | ADM-31 | Cromemco 3102 |
+|---|---|---|---|---|
+| Screen driver | `HEXSCR.MAC` | `HEVT52.MAC` | `HEADM31.MAC` | `HEC3102.MAC` |
+| Key input | `HEXKEY.MAC` | `HEXKEY.MAC` | `HEADM31K.MAC` | `HEC3102K.MAC` |
+| ESC menu | `HEXMENU.MAC` | `HEXMNVT.MAC` | `HEXMNVT.MAC` | `HEXMNVT.MAC` |
+
+Selection happens at link time — the linker picks which `.REL` files get bound into the final `.COM`. All four screen drivers export the same PUBLIC symbols (`SCRINIT`, `SCRDRAW`, `CURGOTO`, `ATTRON`, `ATROFF`, `DETSIZ`, etc.) so the rest of the program is terminal-agnostic.
+
+### Build tools
+
+| File | Purpose |
+|---|---|
+| `HEPATCH.MAC` | Standalone CP/M-native patcher for `COLOR` in `HECONFIG.INC` |
+| `HEBUILD.PY` | Python equivalent of `HEPATCH` for host builds |
+| `CPMFMT.PY` | Line-ending / EOF normaliser for `.MAC`, `.INC`, `.SUB` files |
+| `build-all.bat` | Windows-side five-variant build via `cpmulator` |
+| `*.SUB` | CP/M-side per-variant build scripts |
 
 ---
 
@@ -189,3 +242,4 @@ L80 HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXH
 - Clipboard limited to 2048 bytes
 - Search pattern limited to 64 bytes
 - CP/M 8.3 filenames only
+- Terminal auto-sizing (DETSIZ) only available on VT100 builds; other drivers are fixed at 24 rows
