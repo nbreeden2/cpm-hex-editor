@@ -40,7 +40,7 @@ cpmulator M80.COM =HEXSCR
 if errorlevel 1 goto fail
 cpmulator L80.COM HEDIT,HEXSCR,HEXKEY,HEXGAP,HEXIO,HEXMENU,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
 if errorlevel 1 goto fail
-copy /y HEDIT.COM HEDIT-MONO.COM >nul
+copy /y HEDIT.COM HEDIT-M.COM >nul
 echo Built HEDIT.COM (mono)
 
 echo.
@@ -61,8 +61,8 @@ python HEBUILD.PY 0
 python CPMFMT.PY HECONFIG.INC
 
 REM --- Rename mono back to HEDIT.COM ---
-copy /y HEDIT-MONO.COM HEDIT.COM >nul
-del HEDIT-MONO.COM 2>nul
+copy /y HEDIT-M.COM HEDIT.COM >nul
+del HEDIT-M.COM 2>nul
 
 echo.
 echo === All variants built ===
