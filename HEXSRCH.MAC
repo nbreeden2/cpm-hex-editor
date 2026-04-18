@@ -32,6 +32,7 @@
         EXTRN   OUTSTR          ; write $-string
         EXTRN   OUTCHAR         ; write single char
         EXTRN   CURGOTO         ; position cursor (B=row,C=col)
+        EXTRN   RSTAT           ; runtime status row
 
 ;--- Exports ----------------------------------------------
         PUBLIC  SRFIND          ; find (prompt for pattern)
@@ -46,7 +47,8 @@
 
 SRFIND:
         ; Prompt for search type: Hex or ASCII
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,SRTYPMT
@@ -76,7 +78,8 @@ SRTHEX: MVI     A,0
         STA     SRCHTYP         ; type = hex
         ; Clear status line, then prompt for hex bytes
         CALL    STATCLR
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,SRHXPMT
@@ -87,7 +90,8 @@ SRTASC: MVI     A,1
         STA     SRCHTYP         ; type = ASCII
         ; Clear status line, then prompt for ASCII text
         CALL    STATCLR
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,SRASPMT

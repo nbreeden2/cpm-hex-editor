@@ -85,6 +85,10 @@
         PUBLIC  DOEXIT          ; exit handler (for HEXMENU)
         PUBLIC  EDITMODE        ; hex/ascii mode flag
         PUBLIC  NIBBLE          ; high/low nibble flag
+        PUBLIC  REROWS          ; edit row count      (runtime)
+        PUBLIC  RSEPR           ; separator row       (runtime)
+        PUBLIC  RSTAT           ; status row          (runtime)
+        PUBLIC  RBYTPG          ; bytes per page      (runtime)
 
 ;=============================================================
 ; CODE SEGMENT
@@ -468,9 +472,10 @@ DO_CUR:
 DO_PGU:
         XRA     A
         STA     NIBBLE          ; reset nibble state
+        LHLD    RBYTPG          ; HL = runtime bytes/page
+        XCHG                    ; DE = runtime bytes/page
         CALL    GBCSOFF         ; HL = cursor offset
         ; Target = max(0, CSOFF - BYTESPG)
-        LXI     D,BYTESPG
         MOV     A,L
         SUB     E
         MOV     E,A
@@ -493,7 +498,7 @@ DO_PGD:
         CALL    GBTXEND         ; HL = text length
         PUSH    H               ; save TXEND
         ; Target = min(CSOFF + BYTESPG, TXEND)
-        LXI     H,BYTESPG
+        LHLD    RBYTPG          ; HL = runtime bytes/page
         DAD     D               ; HL = CSOFF + BYTESPG
         JC      PGDCLM          ; overflow: clamp to TXEND
         POP     D               ; DE = TXEND
@@ -723,7 +728,7 @@ CHKSCRL:
 
         ; Check if CSOFF >= TOPOFF + BYTESPG
         PUSH    D               ; save CSOFF
-        LXI     H,BYTESPG
+        LHLD    RBYTPG          ; HL = runtime bytes/page
         DAD     B               ; HL = TOPOFF + BYTESPG
         XCHG                    ; DE = TOPOFF + BYTESPG
         POP     H               ; HL = CSOFF
@@ -743,7 +748,7 @@ CSBELOW:
         MOV     A,L
         ANI     0F0H
         MOV     L,A             ; HL = CSOFF aligned to 16
-        LXI     D,BYTESPG-16
+        CALL    BPG16           ; DE = RBYTPG - 16, HL preserved
         MOV     A,L
         SUB     E
         MOV     E,A
@@ -784,7 +789,7 @@ ADJTOFE:
         MOV     A,L
         ANI     0F0H
         MOV     L,A             ; HL = TXEND aligned to 16
-        LXI     D,BYTESPG-16
+        CALL    BPG16           ; DE = RBYTPG - 16, HL preserved
         MOV     A,L
         SUB     E
         MOV     E,A
@@ -845,7 +850,8 @@ DXYES:
         ; No name - clear status bar and prompt for filename
         LXI     D,CLRMSG
         CALL    STATMSG         ; clear status bar
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,EXTASPMT      ; "Save as: "
@@ -920,6 +926,21 @@ ACTTBL:
         DW      DO_DRW          ; 23 ACT_DELRW
         DW      MAINLP          ; 24 ACT_ENTER (no-op in editor)
 
+;=============================================================
+; BPG16 - Load DE with (RBYTPG - 16). HL preserved.
+; Used by scroll/page-alignment code that needs the runtime
+; bytes-per-page minus one display row.
+; Entry:  (none)
+; Exit:   DE = RBYTPG - 16, HL unchanged, A/F clobbered.
+;=============================================================
+BPG16:  PUSH    H
+        LHLD    RBYTPG          ; HL = runtime bytes/page
+        LXI     D,-16           ; DE = 0FFF0H (two's complement -16)
+        DAD     D               ; HL = RBYTPG - 16
+        XCHG                    ; DE = RBYTPG - 16
+        POP     H               ; restore caller's HL
+        RET
+
 ;--- String constants ---------------------------------
 NOMEMSG: DB     'Insufficient memory',CR,LF,'$'
 CLRMSG:  DB     ' $'
@@ -934,6 +955,14 @@ EXTASPMT: DB    'Save as: $'
 
 OLDSP:   DW     0               ; saved entry SP
 TPATOP:  DW     0               ; BDOS address / TPA top
+
+;--- Runtime screen dimensions (defaults = 24-row VT100,
+;    DETSIZ may rewrite at startup) ---------------------
+REROWS:  DB     EDITROW         ; edit-area row count (20)
+RSEPR:   DB     SEPRROW         ; separator row       (23)
+RSTAT:   DB     STATROW         ; status / prompt row (24)
+RBYTPG:  DW     BYTESPG         ; bytes per page      (320)
+
 INSMODE: DB     MODE_OVR        ; insert/overwrite (default OVR)
 DIRTY:   DB     1               ; 1 = full screen redraw needed
 DRTLINE: DB     0               ; 1 = redraw current row only

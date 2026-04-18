@@ -35,6 +35,7 @@
 	EXTRN	OUTCHAR		; output one character
 	EXTRN	CURGOTO		; position cursor (B=row,C=col)
 	EXTRN	INFOBAR		; update info bar
+	EXTRN	RSTAT		; runtime status row
 
 ;--- Exports ----------------------------------------------
 	PUBLIC	FIOPEN		; load file into buffer
@@ -1208,7 +1209,8 @@ FWOFWR:
 ;=============================================================
 FIPROMPT:
 	PUSH	D		; save prompt string pointer
-	MVI	B,STATROW	; row 24
+	LDA	RSTAT		; B = runtime status row
+	MOV	B,A
 	MVI	C,1		; col 1
 	CALL	CURGOTO
 	POP	D		; restore prompt pointer

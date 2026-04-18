@@ -35,6 +35,7 @@
         EXTRN   ATROFF          ; reverse video off ($-string)
         EXTRN   CLRTOE          ; clear to end of line ($-string)
         EXTRN   SCRINIT         ; clear screen + draw chrome
+        EXTRN   RSTAT           ; runtime status row
 
 ;--- Exports ----------------------------------------------
         PUBLIC  HLPSHOW         ; show help and wait
@@ -145,7 +146,8 @@ HLPLP:  LDA     HLPIDX
 
 HLPWAIT:
         ; Footer prompt at row 24
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,ATTRON
@@ -179,7 +181,8 @@ HLPKEY: MVI     E,0FFH
         JZ      HLPKEY          ; no char yet, keep polling
 
         ; Clear the footer line before returning
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,CLRTOE

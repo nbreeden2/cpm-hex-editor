@@ -55,6 +55,7 @@
         EXTRN   SRFIND          ; find (hex/ASCII prompt)
         EXTRN   HLPSHOW         ; help screen
         EXTRN   DOEXIT          ; exit handler
+        EXTRN   RSTAT           ; runtime status row
 
 ;--- Exports ----------------------------------------------
         PUBLIC  MNUSHOW         ; show menu and process
@@ -267,7 +268,8 @@ MNFIND:
 
 ;--- 5. Go To Offset --------------------------------------
 MNGOTO:
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,GTOPMT
@@ -308,7 +310,8 @@ MNHELP:
 
 ;--- 7. Base Offset (for Intel HEX files) ----------------
 MNBOFF:
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,BOFPMT
@@ -367,11 +370,13 @@ MTFMSG: CALL    STATMSG
 ;----------------------------------------------------------
 MNFILL:
         ; Prompt for start address
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         CALL    STATCLR
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,FLSPMT
@@ -439,11 +444,13 @@ MFLVOK:
 
 MFLGAP:
         ; Ask user about gap fill
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         CALL    STATCLR
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,FLGAPM
@@ -511,11 +518,13 @@ MFLNO2:
 
 MFLOVW:
         ; Confirm overwrite
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         CALL    STATCLR
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,FLOVWM

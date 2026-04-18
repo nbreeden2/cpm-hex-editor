@@ -26,6 +26,9 @@
         EXTRN   GBRDBLK         ; read block of bytes
         EXTRN   GBTXEND         ; HL = data length
         EXTRN   GBCSOFF         ; HL = cursor offset
+        EXTRN   REROWS          ; runtime edit row count
+        EXTRN   RSEPR           ; runtime separator row
+        EXTRN   RSTAT           ; runtime status row
 
         PUBLIC  SCRINIT         ; init/clear screen
         PUBLIC  SCRDRAW         ; full screen redraw
@@ -146,7 +149,8 @@ HDRDRAW:
 ; Exit:   All regs clobbered
 ;=============================================================
 SEPRDRAW:
-        MVI     B,SEPRROW
+        LDA     RSEPR           ; B = runtime separator row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,SGRDIM
@@ -264,8 +268,9 @@ SDNEXT:
         LDA     SDROW
         INR     A
         STA     SDROW
-        CPI     EDITROW
-        JC      SDLOOP          ; loop for 20 rows
+        LXI     H,REROWS        ; compare with runtime row count
+        CMP     M
+        JC      SDLOOP          ; loop while SDROW < REROWS
 
         ; Clear status line
         CALL    STATCLR
@@ -1109,7 +1114,8 @@ CPGOTO:
 ;=============================================================
 STATMSG:
         PUSH    D               ; save message pointer
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         POP     D
@@ -1123,7 +1129,8 @@ STATMSG:
 ; Exit:   All regs clobbered
 ;=============================================================
 STATCLR:
-        MVI     B,STATROW
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
         MVI     C,1
         CALL    CURGOTO
         LXI     D,CLREOL
