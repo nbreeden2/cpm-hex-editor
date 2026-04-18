@@ -1,0 +1,1288 @@
+;============================================================
+; FILE:    HEVT52.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.03
+; DATE:    2026-04-18
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   VT52 terminal driver for HEDIT. Drop-in replacement for
+;   HEXSCR.MAC. Same PUBLIC exports, same EXTRN imports. No
+;   colour, no SGR attributes beyond reverse video. Uses VT52
+;   escape sequences:
+;
+;     Cursor address: ESC Y row+1FH col+1FH
+;     Clear screen:   ESC H ESC J (home + erase to end)
+;     Clear to EOL:   ESC K
+;     Reverse video:  ESC p / ESC q (common clone extension)
+;
+;   NOTE: The base DEC VT52 has no reverse video. Many clones
+;   (Heath H19, Soroc IQ-120, Televideo 912/920) add ESC p / q.
+;   On a strict VT52, block highlight and cursor-byte emphasis
+;   will render as normal text.
+;
+;   DETSIZ is a stub (the VT52 protocol has no DSR). Always
+;   leaves the compile-time defaults in place (24-row).
+;
+;   Build: M80 =HEVT52
+;   Link:  L80 HEDIT,HEVT52,HEXKEY,HEXGAP,HEXIO,HEXMNVT,...
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.03 2026-04-18  Forked from HEXSCR.MAC for multi-term
+;============================================================
+
+        INCLUDE HEDIT.INC
+
+        EXTRN   CURBDP          ; current buffer desc ptr
+        EXTRN   DIRTY           ; dirty flag
+        EXTRN   INSMODE         ; insert/overwrite mode
+        EXTRN   EDITMODE        ; hex/ascii edit mode
+        EXTRN   NIBBLE          ; 0=high nibble, 1=low nibble
+        EXTRN   GBRDBLK         ; read block of bytes
+        EXTRN   GBTXEND         ; HL = data length
+        EXTRN   GBCSOFF         ; HL = cursor offset
+        EXTRN   REROWS          ; runtime edit row count
+        EXTRN   RSEPR           ; runtime separator row
+        EXTRN   RSTAT           ; runtime status row
+        EXTRN   RBYTPG          ; runtime bytes per page
+
+        PUBLIC  SCRINIT         ; init/clear screen
+        PUBLIC  SCRDRAW         ; full screen redraw
+        PUBLIC  SCREDCL         ; redraw current row only
+        PUBLIC  INFOBAR         ; update info bar row
+        PUBLIC  CURPOS          ; position HW cursor
+        PUBLIC  STATMSG         ; write to status bar
+        PUBLIC  STATCLR         ; clear status bar
+        PUBLIC  OUTCHAR         ; output one character
+        PUBLIC  OUTSTR          ; output $-string
+        PUBLIC  CURGOTO         ; goto row,col
+        PUBLIC  OUTN4HX         ; output 16-bit hex
+        PUBLIC  OUTN2HX         ; output 8-bit hex
+        PUBLIC  ISLOAD          ; loading flag
+        PUBLIC  ATTRON          ; reverse video on ($-string)
+        PUBLIC  ATROFF          ; reverse video off ($-string)
+        PUBLIC  CLRTOE          ; clear to end of line ($-string)
+        PUBLIC  DETSIZ          ; detect terminal rows via DSR
+
+;--- ESC sequence string constants --------------------
+; VT52 uses short 2-byte escapes except ESC Y <row> <col> for
+; direct cursor addressing (handled by CURGOTO, not a string).
+CLRSTR:  DB     ESC,'H',ESC,'J','$'  ; home + erase to end of screen
+CLREOL:
+CLRTOE:  DB     ESC,'K','$'          ; clear to end of line
+HIDCUR:  DB     '$'                  ; hide cursor: no VT52 equivalent
+SHWCUR:  DB     '$'                  ; show cursor: no VT52 equivalent
+APPKPD:  DB     '$'                  ; application keypad: n/a
+; Reverse-video attribute (VT52 clone extension):
+SGRRES:
+ATROFF:  DB     ESC,'q','$'          ; reverse video off
+SGRREV:
+ATTRON:  DB     ESC,'p','$'          ; reverse video on
+; Bold/dim/colour have no VT52 equivalent -- emit nothing so the
+; shared rendering code can keep calling OUTSTR without effect.
+SGRBLD:  DB     '$'                  ; bold: n/a, no-op
+SGRDIM:  DB     '$'                  ; dim: n/a, no-op
+SGRBGN:  DB     '$'                  ; colour accent: n/a, no-op
+SGRCYN:  DB     '$'                  ; colour accent: n/a, no-op
+SGRYEL:  DB     '$'                  ; colour accent: n/a, no-op
+
+;--- Separator version + build string ------------------
+SPRVER:  DB     ' HEDIT v1.03 ','$'
+SPRBLD:  DB     'Build 004 ','$'
+SPRLEN  EQU     24              ; length of SPRVER + SPRBLD (excluding $)
+
+;--- Info bar label strings ---------------------------
+IBSZSTR: DB     ' Size:','$'
+IBOFSTR: DB     ' Off:','$'
+IBINSTR: DB     ' [INS]','$'
+IBOVSTR: DB     ' [OVR]','$'
+IBHXSTR: DB     ' [HEX]','$'
+IBASSTR: DB     ' [ASC]','$'
+IBBINSTR: DB    ' [BIN]','$'
+IBHEXSTR: DB    ' [IHEX]','$'
+NAMNMST: DB     '[No Name]','$'
+LDNGMST: DB     '[Loading]','$'
+
+;--- Column header string (row 2) ---------------------
+COLHDR:  DB     'Addr: 00 01 02 03 04 05 06 07'
+         DB     '  08 09 0A 0B 0C 0D 0E 0F   ASCII'
+         DB     '$'
+
+;--- Hex digit table ----------------------------------
+HXTBL:   DB     '0123456789ABCDEF'
+
+;=============================================================
+; SCRINIT - Initialize terminal and draw screen chrome.
+; Entry:  (none)
+; Exit:   Screen cleared and chrome drawn; all regs clobbered
+;=============================================================
+        CSEG
+
+SCRINIT:
+        LXI     D,HIDCUR        ; hide cursor during init (no-op on VT52)
+        CALL    OUTSTR
+        LXI     D,CLRSTR        ; ESC H ESC J - home + erase to end
+        CALL    OUTSTR
+        LXI     D,APPKPD        ; application keypad mode (no-op on VT52)
+        CALL    OUTSTR
+        ; Draw column header (row 2)
+        CALL    HDRDRAW
+        ; Draw separator (row 23)
+        CALL    SEPRDRAW
+        ; Clear status line (row 24)
+        CALL    STATCLR
+        ; Set dirty to trigger full redraw
+        MVI     A,1
+        STA     DIRTY
+        LXI     D,SHWCUR
+        JMP     OUTSTR
+
+;=============================================================
+; HDRDRAW - Draw column header (row 2) in dim attribute.
+; Entry:  (none)
+; Exit:   All regs clobbered
+;=============================================================
+HDRDRAW:
+        MVI     B,HDRROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,SGRDIM
+        CALL    OUTSTR
+        LXI     D,COLHDR
+        CALL    OUTSTR
+        LXI     D,SGRRES
+        CALL    OUTSTR
+        LXI     D,CLREOL
+        JMP     OUTSTR
+
+;=============================================================
+; SEPRDRAW - Draw separator line (row 23): 80 '=' chars, dim.
+; Entry:  (none)
+; Exit:   All regs clobbered
+;=============================================================
+SEPRDRAW:
+        LDA     RSEPR           ; B = runtime separator row
+        MOV     B,A
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,SGRDIM
+        CALL    OUTSTR
+        LXI     D,SPRVER        ; print version string
+        CALL    OUTSTR
+        LXI     D,SPRBLD        ; print build number
+        CALL    OUTSTR
+        MVI     B,SCRCOLS-SPRLEN ; fill rest with '='
+SPRLP:  MVI     A,'='
+        PUSH    B
+        CALL    OUTCHAR
+        POP     B
+        DCR     B
+        JNZ     SPRLP
+        LXI     D,SGRRES
+        JMP     OUTSTR
+
+;=============================================================
+; SCRDRAW - Full screen redraw of 20 hex data rows.
+; Entry:  (none) - uses current buffer via CURBDP
+; Exit:   All edit rows redrawn; all regs clobbered
+;=============================================================
+SCRDRAW:
+        ; Read BD_TOPOFF into SDTOPOFF
+        LHLD    CURBDP
+        LXI     D,BD_TOPOFF
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        XCHG
+        SHLD    SDTOPOFF        ; save top offset
+
+        ; Get data length
+        CALL    GBTXEND
+        SHLD    SDTXEND         ; save for row loop
+
+        MVI     A,0
+        STA     SDROW           ; start at row 0
+
+SDLOOP:
+        ; Calculate byte offset = TOPOFF + row*16
+        LDA     SDROW
+        MOV     L,A
+        MVI     H,0
+        ; Shift left 4 times (multiply by 16)
+        DAD     H
+        DAD     H
+        DAD     H
+        DAD     H
+        XCHG                    ; DE = row*16
+        LHLD    SDTOPOFF
+        DAD     D               ; HL = TOPOFF + row*16
+        SHLD    SDOFFS          ; save row offset
+
+        ; Check if offset >= data length
+        XCHG                    ; DE = row offset
+        LHLD    SDTXEND         ; HL = data length
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; offset - length
+        JNC     SDBLNK          ; offset >= length -> blank row
+
+        ; Compute byte count = min(16, length - offset)
+        ; DE = row offset, HL = data length
+        ; length - offset already known to be > 0
+        MOV     A,L
+        SUB     E
+        MOV     C,A
+        MOV     A,H
+        SBB     D
+        ; If high byte > 0, at least 256 bytes remain -> count = 16
+        ORA     A
+        JNZ     SDFULL
+        ; Low byte C has remaining count
+        MOV     A,C
+        CPI     BYTESROW
+        JNC     SDFULL          ; >= 16 -> full row
+        ; Partial row: C = byte count
+        JMP     SDREAD
+
+SDFULL: MVI     C,BYTESROW      ; 16 bytes
+
+SDREAD:
+        ; Read bytes: offset in SDOFFS, count in C
+        MOV     A,C
+        STA     SDBCNT          ; save byte count
+        MVI     B,0             ; BC = byte count (0-16)
+        LXI     D,ROWBUF        ; DE = destination
+        LHLD    SDOFFS          ; HL = logical offset
+        CALL    GBRDBLK         ; read BC bytes from HL into DE
+
+        ; Render the row
+        LDA     SDROW
+        MOV     B,A             ; B = row number (0-based)
+        LXI     D,ROWBUF        ; DE = data buffer
+        LDA     SDBCNT
+        MOV     C,A             ; C = byte count
+        CALL    SCRHROW
+        JMP     SDNEXT
+
+SDBLNK:
+        ; Blank row: position and clear
+        LDA     SDROW
+        ADI     EDITFR          ; screen row (1-based)
+        MOV     B,A
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,CLREOL
+        CALL    OUTSTR
+
+SDNEXT:
+        LDA     SDROW
+        INR     A
+        STA     SDROW
+        LXI     H,REROWS        ; compare with runtime row count
+        CMP     M
+        JC      SDLOOP          ; loop while SDROW < REROWS
+
+        ; Clear status line
+        CALL    STATCLR
+        RET
+
+;=============================================================
+; SCREDCL - Redraw current row only.
+; Calculates which row the cursor is on and redraws it.
+; Entry:  (none)
+; Exit:   All regs clobbered
+;=============================================================
+SCREDCL:
+        ; Get cursor offset
+        CALL    GBCSOFF
+        SHLD    SDOFFS          ; cursor offset
+
+        ; Get top offset
+        LHLD    CURBDP
+        LXI     D,BD_TOPOFF
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        XCHG
+        SHLD    SDTOPOFF
+
+        ; row = (CSOFF - TOPOFF) / 16
+        LHLD    SDOFFS          ; HL = cursor offset
+        XCHG                    ; DE = cursor offset
+        LHLD    SDTOPOFF        ; HL = top offset
+        MOV     A,E
+        SUB     L
+        MOV     L,A
+        MOV     A,D
+        SBB     H
+        MOV     H,A             ; HL = CSOFF - TOPOFF
+        ; Divide by 16: shift right 4 times
+        MOV     A,H
+        RAR
+        MOV     A,L
+        RAR
+        RAR
+        RAR
+        RAR
+        ANI     0FH             ; A = row (0-19)
+        ; If high byte was set, need full calculation
+        ; But with 20 rows * 16 bytes = 320 max, high byte can be 1
+        ; Full division: HL / 16
+        PUSH    H               ; save offset diff
+        ; Recalculate: use H*16 + shift of L
+        POP     H
+        ; Shift HL right 4 times
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0F0H            ; high nibble of H shifted to bits 7-4
+        MOV     B,A             ; save
+        MOV     A,L
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH             ; low nibble of L shifted right 4
+        ORA     B               ; combine
+        ; A = row number (0-based)
+        STA     SDROW
+
+        ; Calculate row's starting offset (aligned to 16)
+        ; rowoff = TOPOFF + row*16
+        MOV     L,A
+        MVI     H,0
+        DAD     H
+        DAD     H
+        DAD     H
+        DAD     H               ; HL = row*16
+        XCHG
+        LHLD    SDTOPOFF
+        DAD     D               ; HL = aligned row offset
+        SHLD    SDOFFS
+
+        ; Get data length for count calculation
+        CALL    GBTXEND
+        SHLD    SDTXEND
+
+        ; Compute byte count
+        XCHG                    ; DE = txend
+        LHLD    SDOFFS          ; HL = row offset
+        ; count = min(16, txend - rowoff)
+        MOV     A,E
+        SUB     L
+        MOV     C,A
+        MOV     A,D
+        SBB     H
+        JC      SCBLNK          ; rowoff > txend -> blank
+        ORA     A
+        JNZ     SCFULL          ; high byte > 0 -> at least 256 remain
+        MOV     A,C
+        ORA     A
+        JZ      SCBLNK          ; exactly 0 bytes
+        CPI     BYTESROW
+        JNC     SCFULL
+        ; Partial: C = count
+        JMP     SCRDRD
+
+SCFULL: MVI     C,BYTESROW
+
+SCRDRD:
+        ; Read bytes into ROWBUF
+        MOV     A,C
+        STA     SDBCNT
+        MVI     B,0             ; BC = byte count (0-16)
+        LXI     D,ROWBUF        ; DE = destination
+        LHLD    SDOFFS          ; HL = logical offset
+        CALL    GBRDBLK
+
+        ; Render
+        LDA     SDROW
+        MOV     B,A
+        LXI     D,ROWBUF
+        LDA     SDBCNT
+        MOV     C,A
+        JMP     SCRHROW
+
+SCBLNK:
+        ; Blank row
+        LDA     SDROW
+        ADI     EDITFR
+        MOV     B,A
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,CLREOL
+        JMP     OUTSTR
+
+;=============================================================
+; SCRHROW - Render one hex data row.
+; Entry:  B = row number (0-based, relative to edit area)
+;         DE = data buffer address
+;         C = byte count (0-16)
+; Exit:   All regs clobbered
+;=============================================================
+SCRHROW:
+        MOV     A,B
+        STA     SHROW           ; save row number
+        MOV     A,C
+        STA     SHCNT           ; save byte count
+        XCHG
+        SHLD    SHBUF           ; save buffer address
+
+        ; Cache mark boundaries for highlight check
+        LHLD    CURBDP
+        LXI     D,BD_MRKBG
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        XCHG
+        SHLD    SHMKBG          ; save MRKBG
+        LHLD    CURBDP
+        LXI     D,BD_MRKEN
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        XCHG
+        SHLD    SHMKEN          ; save MRKEN
+
+        ; Cache cursor offset for live mark preview
+        CALL    GBCSOFF
+        SHLD    SHCSOF
+
+        ; Compute row base offset = TOPOFF + row*16
+        LDA     SHROW
+        MOV     L,A
+        MVI     H,0
+        DAD     H
+        DAD     H
+        DAD     H
+        DAD     H               ; HL = row*16
+        XCHG
+        LHLD    SDTOPOFF
+        DAD     D
+        SHLD    SHROFF          ; save row base offset
+
+        ; Compute highlight range for this row
+        CALL    SHHLRNG
+        ; Clamp highlight end to actual byte count
+        LDA     SHHLMD
+        ORA     A
+        JZ      SHHLOK          ; no highlight, skip
+        LDA     SHCNT
+        ORA     A
+        JZ      SHHLOF          ; no bytes, disable highlight
+        DCR     A               ; A = last valid index
+        MOV     B,A
+        LDA     SHHLE
+        CMP     B
+        JC      SHHLOK          ; SHHLE < last: ok
+        JZ      SHHLOK          ; SHHLE == last: ok
+        MOV     A,B
+        STA     SHHLE           ; clamp to last valid byte
+        JMP     SHHLOK
+SHHLOF: XRA     A
+        STA     SHHLMD          ; disable highlight
+SHHLOK:
+
+        ; Position cursor at start of row
+        LDA     SHROW
+        ADI     EDITFR          ; convert to 1-based screen row
+        MOV     B,A
+        MVI     C,1
+        CALL    CURGOTO
+
+        ;--- Address field: bold green ---
+        LXI     D,SGRBGN        ; bold green
+        CALL    OUTSTR
+
+        ; Calculate address = BD_BADDR + TOPOFF + row*16
+        LDA     SHROW
+        MOV     L,A
+        MVI     H,0
+        DAD     H
+        DAD     H
+        DAD     H
+        DAD     H               ; HL = row*16
+        XCHG
+        LHLD    SDTOPOFF
+        DAD     D               ; HL = TOPOFF + row*16
+        XCHG                    ; DE = logical offset
+        PUSH    D               ; save for later
+        LHLD    CURBDP
+        MVI     A,BD_BADDR
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+        INX     H
+        MOV     H,M
+        MOV     L,A             ; HL = BD_BADDR
+        POP     D               ; DE = logical offset
+        DAD     D               ; HL = base + offset = display addr
+        CALL    OUTN4HX         ; output 4 hex digits
+
+        ; ": " separator
+        LXI     D,SGRRES
+        CALL    OUTSTR
+        MVI     A,':'
+        CALL    OUTCHAR
+        MVI     A,' '
+        CALL    OUTCHAR
+
+        ;--- Hex bytes: cyan ---
+        LXI     D,SGRCYN
+        CALL    OUTSTR
+
+        ; Output 16 hex byte positions
+        MVI     A,0
+        STA     SHIDX           ; byte index
+
+SHHXLP:
+        LDA     SHIDX
+        CPI     BYTESROW
+        JZ      SHHXDN          ; done all 16 positions
+
+        ; Group separator between byte 7 and 8
+        CPI     8
+        JNZ     SHNOSP
+        MVI     A,' '
+        CALL    OUTCHAR
+SHNOSP:
+        ; Check highlight transitions before byte/empty check
+        LDA     SHHLMD
+        ORA     A
+        JZ      SHHXBC          ; no highlight, skip attr logic
+        LDA     SHIDX
+        MOV     B,A
+        LDA     SHHLS
+        CMP     B
+        JNZ     SHHXE1          ; not at highlight start
+        LXI     D,SGRREV        ; switch to reverse video
+        CALL    OUTSTR
+        JMP     SHHXBC
+SHHXE1: ; Check if leaving highlight after prev byte
+        LDA     SHHLE
+        INR     A               ; end+1
+        CMP     B
+        JNZ     SHHXBC
+        LXI     D,SGRCYN        ; back to cyan
+        CALL    OUTSTR
+
+SHHXBC: ; Check if this byte exists
+        LDA     SHIDX
+        MOV     B,A
+        LDA     SHCNT
+        CMP     B               ; count - index
+        JZ      SHEMPT          ; index == count: empty
+        JC      SHEMPT          ; index > count: empty
+
+SHHXRD: ; Output hex byte
+        LHLD    SHBUF
+        LDA     SHIDX
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A             ; HL -> byte
+        MOV     A,M             ; A = byte value
+        CALL    OUTN2HX         ; output 2 hex digits
+        MVI     A,' '
+        CALL    OUTCHAR
+        JMP     SHNXHX
+
+SHEMPT:
+        ; Empty position: "   " (3 spaces)
+        MVI     A,' '
+        CALL    OUTCHAR
+        MVI     A,' '
+        CALL    OUTCHAR
+        MVI     A,' '
+        CALL    OUTCHAR
+
+SHNXHX:
+        LDA     SHIDX
+        INR     A
+        STA     SHIDX
+        JMP     SHHXLP
+
+SHHXDN:
+        ;--- Reset any active highlight, gap between hex and ASCII ---
+        LXI     D,SGRRES
+        CALL    OUTSTR
+        MVI     A,' '
+        CALL    OUTCHAR
+        MVI     A,' '
+        CALL    OUTCHAR
+
+        ;--- ASCII column: yellow ---
+        LXI     D,SGRYEL
+        CALL    OUTSTR
+
+        MVI     A,0
+        STA     SHIDX
+
+SHASCLP:
+        LDA     SHIDX
+        MOV     B,A
+        LDA     SHCNT
+        CMP     B
+        JZ      SHASCDN         ; no more bytes
+        JC      SHASCDN
+
+        ; Check if entering highlight at this byte
+        LDA     SHHLMD
+        ORA     A
+        JZ      SHACRD          ; no highlight active for this row
+        LDA     SHIDX
+        MOV     B,A
+        LDA     SHHLS
+        CMP     B
+        JNZ     SHACE1          ; not at highlight start
+        LXI     D,SGRREV        ; switch to reverse video
+        CALL    OUTSTR
+SHACE1: ; Check if leaving highlight after this byte
+        LDA     SHHLE
+        INR     A               ; end+1
+        CMP     B
+        JNZ     SHACRD
+        LXI     D,SGRYEL        ; back to yellow
+        CALL    OUTSTR
+
+SHACRD: ; Get byte value
+        LHLD    SHBUF
+        LDA     SHIDX
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+
+        ; Printable range: 20H-7EH shown as-is, others as '.'
+        CPI     20H
+        JC      SHDOT
+        CPI     7FH
+        JNC     SHDOT
+        ; Printable character
+        JMP     SHASCOUT
+
+SHDOT:  MVI     A,'.'
+
+SHASCOUT:
+        CALL    OUTCHAR
+        LDA     SHIDX
+        INR     A
+        STA     SHIDX
+        JMP     SHASCLP
+
+SHASCDN:
+        ; Reset attributes and clear to EOL
+        LXI     D,SGRRES
+        CALL    OUTSTR
+        LXI     D,CLREOL
+        JMP     OUTSTR
+
+;-------------------------------------------------------------
+; SHHLRNG - Precompute highlight range for the current row.
+; Sets SHHLMD=1 if any bytes in this row are highlighted,
+; SHHLS=first highlighted index (0-15),
+; SHHLE=last highlighted index (0-15).
+; Called once per row, not per byte.
+;-------------------------------------------------------------
+SHHLRNG:
+        ; Default: no highlight
+        XRA     A
+        STA     SHHLMD
+
+        ; If MRKBG = FFFF, no mark active
+        LHLD    SHMKBG
+        MOV     A,H
+        ANA     L
+        INR     A
+        RZ                      ; MRKBG=FFFF: done
+
+        ; Determine effective range: low..high
+        LHLD    SHMKEN
+        MOV     A,H
+        ANA     L
+        INR     A
+        JNZ     SHHR2           ; MRKEN set, use MRKBG..MRKEN
+
+        ; Live preview: range = min/max(MRKBG, cursor)
+        LHLD    SHMKBG
+        XCHG                    ; DE = MRKBG
+        LHLD    SHCSOF          ; HL = cursor
+        MOV     A,L
+        SUB     E
+        MOV     A,H
+        SBB     D               ; cursor - MRKBG
+        JNC     SHHR1           ; cursor >= MRKBG
+        ; cursor < MRKBG: low=cursor, high=MRKBG
+        LHLD    SHCSOF
+        SHLD    SHCKLO
+        LHLD    SHMKBG
+        SHLD    SHCKHI
+        JMP     SHHR3
+SHHR1:  ; cursor >= MRKBG
+        LHLD    SHMKBG
+        SHLD    SHCKLO
+        LHLD    SHCSOF
+        SHLD    SHCKHI
+        JMP     SHHR3
+
+SHHR2:  ; Both marks set
+        LHLD    SHMKBG
+        SHLD    SHCKLO
+        LHLD    SHMKEN
+        SHLD    SHCKHI
+
+SHHR3:
+        ; Now SHCKLO..SHCKHI is the logical highlight range.
+        ; Row covers offsets SHROFF .. SHROFF+15.
+        ; Clamp highlight to row and compute indices 0-15.
+
+        ; If SHCKHI < SHROFF, no overlap
+        LHLD    SHCKHI
+        XCHG                    ; DE = high
+        LHLD    SHROFF          ; HL = row start
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; high - rowstart
+        RC                      ; high < rowstart: no overlap
+
+        ; If SHCKLO > SHROFF+15, no overlap
+        LHLD    SHROFF
+        LXI     D,15
+        DAD     D               ; HL = row end (SHROFF+15)
+        XCHG                    ; DE = row end
+        LHLD    SHCKLO          ; HL = low
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; rowend - low
+        RC                      ; rowend < low: no overlap
+
+        ; There is overlap. Clamp low to SHROFF.
+        LHLD    SHCKLO
+        XCHG                    ; DE = low
+        LHLD    SHROFF          ; HL = rowstart
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; low - rowstart
+        JNC     SHHR4           ; low >= rowstart: use low
+        LHLD    SHROFF          ; clamp to rowstart
+        SHLD    SHCKLO
+SHHR4:
+        ; Clamp high to SHROFF+15
+        LHLD    SHROFF
+        LXI     D,15
+        DAD     D               ; HL = row end
+        XCHG                    ; DE = row end
+        LHLD    SHCKHI          ; HL = high
+        MOV     A,E
+        SUB     L
+        MOV     A,D
+        SBB     H               ; rowend - high
+        JNC     SHHR5           ; rowend >= high: use high
+        ; clamp high to rowend
+        XCHG
+        SHLD    SHCKHI
+SHHR5:
+        ; Convert to 0-based indices: index = offset - SHROFF
+        LHLD    SHCKLO
+        XCHG
+        LHLD    SHROFF
+        MOV     A,E
+        SUB     L               ; low byte is enough (0-15)
+        STA     SHHLS           ; highlight start index
+
+        LHLD    SHCKHI
+        XCHG
+        LHLD    SHROFF
+        MOV     A,E
+        SUB     L
+        STA     SHHLE           ; highlight end index
+
+        MVI     A,1
+        STA     SHHLMD          ; highlight active
+        RET
+
+;=============================================================
+; INFOBAR - Update info bar (row 1).
+; Shows: drive+filename, Size:XXXX, Off:XXXX, [INS]/[OVR],
+;        [HEX]/[ASC]
+; Entry:  (none)
+; Exit:   All regs clobbered
+;=============================================================
+INFOBAR:
+        MVI     B,INFOROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,SGRREV        ; reverse video for info bar
+        CALL    OUTSTR
+
+        ; Check loading flag
+        LDA     ISLOAD
+        ORA     A
+        JNZ     IBLDNG
+
+        ;--- Check if file has a name ---
+        LHLD    CURBDP
+        LXI     D,BD_FNAME+1    ; first char of name
+        DAD     D
+        MOV     A,M
+        CPI     ' '
+        JNZ     IBHNAM          ; has a name
+        ; No name: show [No Name]
+        LXI     D,NAMNMST
+        CALL    OUTSTR
+        JMP     IBSIZE
+
+IBHNAM:
+        ;--- Drive letter ---
+        LHLD    CURBDP
+        LXI     D,BD_FNAME
+        DAD     D               ; HL -> BD_FNAME
+        MOV     A,M             ; drive byte
+        ORA     A
+        JZ      IBDDEF          ; 0 = default drive
+        ADI     'A'-1           ; 1=A, 2=B, etc.
+        JMP     IBDOUT
+IBDDEF:
+        ; Get current drive from BDOS
+        MVI     C,BF_CURDSK
+        CALL    BDOS
+        ; BDOS returns current disk in A (0=A, 1=B, ...)
+        ADI     'A'
+IBDOUT:
+        CALL    OUTCHAR
+        MVI     A,':'
+        CALL    OUTCHAR
+
+        ;--- Filename (8 chars) ---
+        ; Copy 8 filename bytes to local buffer, then output
+        ; (avoids save/restore HL across each OUTCHAR/BDOS call)
+        LHLD    CURBDP
+        LXI     D,BD_FNAME+1    ; skip drive byte
+        DAD     D               ; HL -> filename
+        MVI     B,8
+        LXI     D,IBFNTMP       ; local copy buffer
+IBFCPY: MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCR     B
+        JNZ     IBFCPY
+        ; Now output from local buffer, skipping trailing spaces
+        ; First find last non-space
+        LXI     H,IBFNTMP+7     ; last char
+        MVI     B,8
+IBFTRM: MOV     A,M
+        CPI     ' '
+        JNZ     IBFOUT
+        DCX     H
+        DCR     B
+        JNZ     IBFTRM
+        JMP     IBEXT           ; all spaces -> no name
+IBFOUT:
+        ; B = number of chars to output (including trailing non-space)
+        MOV     A,B
+        STA     IBFNCNT
+        LXI     H,IBFNTMP
+        SHLD    IBFNPTR
+IBFNLP: LHLD    IBFNPTR
+        MOV     A,M             ; get next char
+        INX     H
+        SHLD    IBFNPTR         ; save updated pointer
+        CALL    OUTCHAR         ; BDOS clobbers all regs
+        LDA     IBFNCNT
+        DCR     A
+        STA     IBFNCNT
+        JNZ     IBFNLP
+
+IBEXT:
+        ;--- Extension ---
+        ; Copy 3 extension bytes to local buffer
+        LHLD    CURBDP
+        LXI     D,BD_FNAME+9    ; drive(1) + name(8)
+        DAD     D
+        MOV     A,M
+        STA     IBEXTMP
+        INX     H
+        MOV     A,M
+        STA     IBEXTMP+1
+        INX     H
+        MOV     A,M
+        STA     IBEXTMP+2
+
+        ; Check if extension is blank
+        LDA     IBEXTMP
+        CPI     ' '
+        JZ      IBNOEX
+        ; Output ".ext"
+        MVI     A,'.'
+        CALL    OUTCHAR
+        LDA     IBEXTMP
+        CALL    OUTCHAR
+        LDA     IBEXTMP+1
+        CPI     ' '
+        JZ      IBNOEX
+        CALL    OUTCHAR
+        LDA     IBEXTMP+2
+        CPI     ' '
+        JZ      IBNOEX
+        CALL    OUTCHAR
+IBNOEX:
+        JMP     IBSIZE
+
+IBLDNG:
+        ; Loading mode: show "[Loading]"
+        LXI     D,LDNGMST
+        CALL    OUTSTR
+
+IBSIZE:
+        ;--- Size: XXXX ---
+        LXI     D,IBSZSTR
+        CALL    OUTSTR
+        CALL    GBTXEND         ; HL = data length
+        CALL    OUTN4HX
+
+        ;--- Off: XXXX (base + cursor offset) ---
+        LXI     D,IBOFSTR
+        CALL    OUTSTR
+        CALL    GBCSOFF         ; HL = cursor offset
+        XCHG                    ; DE = cursor offset
+        LHLD    CURBDP
+        MVI     A,BD_BADDR
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        MOV     A,M
+        INX     H
+        MOV     H,M
+        MOV     L,A             ; HL = BD_BADDR
+        DAD     D               ; HL = base + cursor offset
+        CALL    OUTN4HX
+
+        ;--- [INS] or [OVR] ---
+        LDA     INSMODE
+        ORA     A
+        JZ      IBOVR
+        LXI     D,IBINSTR
+        JMP     IBIOOUT
+IBOVR:  LXI     D,IBOVSTR
+IBIOOUT:
+        CALL    OUTSTR
+
+        ;--- [HEX] or [ASC] ---
+        LDA     EDITMODE
+        ORA     A
+        JNZ     IBASC
+        LXI     D,IBHXSTR
+        JMP     IBHAOUT
+IBASC:  LXI     D,IBASSTR
+IBHAOUT:
+        CALL    OUTSTR
+
+        ;--- [BIN] or [HEX] file format ---
+        LHLD    CURBDP
+        MOV     A,L
+        ADI     BD_FILEFMT
+        MOV     L,A
+        MOV     A,H
+        ACI     0
+        MOV     H,A
+        MOV     A,M
+        ORA     A
+        JNZ     IBIHEX
+        LXI     D,IBBINSTR
+        JMP     IBFMOUT
+IBIHEX: LXI     D,IBHEXSTR
+IBFMOUT:
+        CALL    OUTSTR
+
+        ;--- Pad rest of info bar with spaces, clear to EOL ---
+        LXI     D,SGRRES
+        CALL    OUTSTR
+        LXI     D,CLREOL
+        JMP     OUTSTR
+
+;=============================================================
+; CURPOS - Position hardware cursor in hex or ASCII field.
+; Entry:  (none)
+; Exit:   Cursor positioned; all regs clobbered
+;=============================================================
+CURPOS:
+        ; Get cursor offset
+        CALL    GBCSOFF
+        SHLD    CPTMP1          ; save CSOFF
+
+        ; Get top offset
+        LHLD    CURBDP
+        LXI     D,BD_TOPOFF
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        XCHG
+        SHLD    CPTMP2          ; save TOPOFF
+
+        ; Calculate offset within visible area
+        LHLD    CPTMP1          ; HL = CSOFF
+        XCHG                    ; DE = CSOFF
+        LHLD    CPTMP2          ; HL = TOPOFF
+        MOV     A,E
+        SUB     L
+        MOV     L,A
+        MOV     A,D
+        SBB     H
+        MOV     H,A             ; HL = CSOFF - TOPOFF
+
+        ; byte_in_row = low_byte AND 0FH
+        MOV     A,L
+        ANI     0FH
+        STA     CPBYTE          ; save byte_in_row
+
+        ; row = (CSOFF - TOPOFF) / 16
+        ; Shift HL right 4 times
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0F0H
+        MOV     B,A
+        MOV     A,L
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        ORA     B               ; A = row (0-based)
+        ADI     EDITFR          ; convert to 1-based screen row
+        MOV     B,A             ; B = screen row
+
+        ; Determine column based on edit mode
+        LDA     EDITMODE
+        ORA     A
+        JNZ     CPASCM          ; ASCII mode
+
+        ;--- HEX mode column ---
+        ; col = HEXFCOL + (byte_in_row * 3) + nibble + group_gap
+        LDA     CPBYTE
+        ; byte_in_row * 3
+        MOV     C,A             ; save byte_in_row
+        ADD     A               ; *2
+        ADD     C               ; *3
+        ADI     HEXFCOL         ; + first hex column
+
+        ; Add group gap if byte >= 8
+        PUSH    PSW             ; save col so far
+        MOV     A,C             ; byte_in_row
+        CPI     8
+        JC      CPNOGP          ; < 8, no gap
+        POP     PSW
+        INR     A               ; +1 for group separator
+        PUSH    PSW
+CPNOGP:
+        POP     PSW             ; A = col before nibble
+
+        ; Add nibble offset
+        PUSH    PSW
+        LDA     NIBBLE
+        MOV     C,A             ; C = nibble (0 or 1)
+        POP     PSW
+        ADD     C               ; + nibble offset
+        MOV     C,A             ; C = final column
+        JMP     CPGOTO
+
+CPASCM:
+        ;--- ASCII mode column ---
+        ; col = ASCFCOL + byte_in_row
+        LDA     CPBYTE
+        ADI     ASCFCOL
+        MOV     C,A             ; C = column
+
+CPGOTO:
+        ; B = row (1-based), C = col (1-based)
+        JMP     CURGOTO
+
+;=============================================================
+; STATMSG - Display status message.
+; Entry:  DE = $-terminated string
+; Exit:   Message shown on row 24; all regs clobbered
+;=============================================================
+STATMSG:
+        PUSH    D               ; save message pointer
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
+        MVI     C,1
+        CALL    CURGOTO
+        POP     D
+        CALL    OUTSTR
+        LXI     D,CLREOL
+        JMP     OUTSTR
+
+;=============================================================
+; STATCLR - Clear status line (row 24).
+; Entry:  (none)
+; Exit:   All regs clobbered
+;=============================================================
+STATCLR:
+        LDA     RSTAT           ; B = runtime status row
+        MOV     B,A
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,CLREOL
+        JMP     OUTSTR
+
+;=============================================================
+; OUTCHAR - Output single character to console.
+; Entry:  A = character
+; Exit:   Character sent; AF BC DE HL clobbered (BDOS)
+;=============================================================
+OUTCHAR:
+        MOV     E,A
+        MVI     C,BF_RAWIO
+        JMP     BDOS
+
+;=============================================================
+; OUTSTR - Output '$'-terminated string to console.
+; Entry:  DE = string address
+; Exit:   String sent; AF BC DE HL clobbered
+;=============================================================
+OUTSTR:
+        LDAX    D               ; A = next char
+        CPI     '$'
+        RZ                      ; end of string
+        PUSH    D               ; save string pointer
+        MOV     E,A
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        POP     D               ; restore string pointer
+        INX     D
+        JMP     OUTSTR
+
+;=============================================================
+; CURGOTO - Position cursor at B=row, C=col (1-based).
+; VT52 direct cursor addressing: ESC Y <row+1FH> <col+1FH>.
+; (1-based row/col + 1FH = 0-based + 20H, the VT52 convention.)
+; Entry:  B = row (1-based), C = col (1-based)
+; Exit:   All regs clobbered
+;=============================================================
+CURGOTO:
+        PUSH    B               ; save row(B) col(C)
+        MVI     A,ESC
+        CALL    OUTCHAR
+        MVI     A,'Y'
+        CALL    OUTCHAR
+        POP     B               ; restore row(B) col(C)
+        MOV     A,B
+        ADI     1FH             ; row byte
+        PUSH    B               ; save col for next output
+        CALL    OUTCHAR
+        POP     B
+        MOV     A,C
+        ADI     1FH             ; col byte
+        JMP     OUTCHAR
+
+;=============================================================
+; OUTN4HX - Output 16-bit value in HL as 4 hex digits.
+; Entry:  HL = value
+; Exit:   All regs clobbered
+;=============================================================
+OUTN4HX:
+        ; High byte first
+        MOV     A,H
+        PUSH    H               ; save HL (BDOS clobbers)
+        CALL    OUTN2HX
+        POP     H
+        ; Low byte
+        MOV     A,L
+        JMP     OUTN2HX
+
+;=============================================================
+; OUTN2HX - Output 8-bit value in A as 2 hex digits.
+; Entry:  A = byte value
+; Exit:   All regs clobbered
+;=============================================================
+OUTN2HX:
+        STA     HXTMP           ; save byte
+        ; High nibble
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        CALL    HEXDIG          ; output high nibble
+        ; Low nibble
+        LDA     HXTMP
+        ANI     0FH
+        JMP     HEXDIG          ; output low nibble (tail call)
+
+;--- HEXDIG: output nibble in A (0-15) as hex character ---
+HEXDIG:
+        CPI     10
+        JC      HXDEC           ; 0-9
+        ADI     'A'-10          ; A-F
+        JMP     OUTCHAR
+HXDEC:  ADI     '0'             ; 0-9
+        JMP     OUTCHAR
+
+;=============================================================
+; DETSIZ - Terminal row auto-detect stub (VT52 has no DSR).
+;   VT52 defines no standard reply for "tell me your size", so
+;   leave the compile-time defaults (24 rows) untouched.
+; Entry:  (none)
+; Exit:   (runtime screen dimensions unchanged)
+;=============================================================
+DETSIZ: RET
+
+;=============================================================
+; DSEG - Working variables
+;=============================================================
+        DSEG
+
+ROWBUF:  DS     16              ; buffer for one row of data
+SDROW:   DB     0               ; current draw row (0-based)
+SDTOPOFF: DW    0               ; saved TOPOFF for draw loop
+SDTXEND: DW     0               ; saved data length
+SDOFFS:  DW     0               ; current row byte offset
+SDBCNT:  DB     0               ; byte count for current row
+SHROW:   DB     0               ; SCRHROW: row number
+SHCNT:   DB     0               ; SCRHROW: byte count
+SHBUF:   DW     0               ; SCRHROW: buffer address
+SHIDX:   DB     0               ; SCRHROW: byte index
+SHMKBG:  DW     0               ; SCRHROW: cached MRKBG
+SHMKEN:  DW     0               ; SCRHROW: cached MRKEN
+SHROFF:  DW     0               ; SCRHROW: row base offset
+SHCSOF:  DW     0               ; SCRHROW: cached cursor offset
+SHCKLO:  DW     0               ; SHHLRNG: effective mark low
+SHCKHI:  DW     0               ; SHHLRNG: effective mark high
+SHHLMD:  DB     0               ; SHHLRNG: 1=highlight active
+SHHLS:   DB     0               ; SHHLRNG: highlight start (0-15)
+SHHLE:   DB     0               ; SHHLRNG: highlight end (0-15)
+CPBYTE:  DB     0               ; CURPOS: byte_in_row
+CPTMP1:  DW     0               ; CURPOS: cursor offset
+CPTMP2:  DW     0               ; CURPOS: top offset
+HXTMP:   DB     0               ; OUTN2HX: saved byte
+ISLOAD:  DB     0               ; non-zero during file loading
+IBFNTMP: DS     8               ; INFOBAR: filename copy buffer
+IBEXTMP: DS     3               ; INFOBAR: extension copy buffer
+IBFNPTR: DW     0               ; INFOBAR: filename output pointer
+IBFNCNT: DB     0               ; INFOBAR: filename output counter
+
+        END
+
