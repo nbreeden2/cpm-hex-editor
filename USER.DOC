@@ -26,7 +26,10 @@
     Requirements:
       - CP/M 2.2 or compatible
       - A terminal matching one of the five variants above
-      - Minimum 9 KB free TPA
+      - At least 9 KB of free memory above the loaded HEDIT.COM
+        (HEDIT refuses to start if less is available between the
+        end of its own code/data and the top of the TPA, since
+        that region is where the edit buffer lives)
 
 
     2. STARTING HEDIT

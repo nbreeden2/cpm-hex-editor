@@ -210,7 +210,11 @@
       ..BDOS-1      Top of gap buffer
       BDOS          BDOS handler
 
-    Minimum TPA: 9 KB (MINMEM = 9*1024).
+    Minimum free memory (BMDATEND to BDOS, i.e. the gap buffer
+    region): 9 KB (MINMEM = 9*1024).  HEDIT refuses to start if
+    (TPATOP - BMDATEND) is smaller than this.  This is *not* the
+    total TPA; the full HEDIT.COM binary and its static data sit
+    below BMDATEND and do not count toward the 9 KB.
 
 
     6. GAP BUFFER ARCHITECTURE
