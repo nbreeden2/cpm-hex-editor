@@ -1,0 +1,5 @@
+; CLEAN.SUB - delete all M80 .REL intermediates and any
+; stray TEMP.COM from an interrupted variant build.
+ERA *.REL
+ERA TEMP.COM
+

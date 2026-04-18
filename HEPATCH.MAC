@@ -1,0 +1,283 @@
+;============================================================
+; FILE:    HEPATCH.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.04
+; DATE:    2026-04-18
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Patches the COLOR EQU value in HECONFIG.INC for variant
+;   builds. CP/M-native equivalent of HEBUILD.PY. Lets the
+;   per-variant .SUB files set the compile-time configuration
+;   without requiring Python on the target system.
+;
+;   HECONFIG.INC is small (under one 128-byte record), so
+;   the entire file is read into a single DMA buffer,
+;   patched in memory, and written back.
+;
+;   Adding a future EQU (e.g. when a new terminal gets its
+;   own compile-time switch): add a pattern string below
+;   (e.g. NEWPAT: DB 'NEWEQU  EQU',0), parse an extra digit
+;   from the command tail, and call PATCH again before the
+;   write-back block.
+;
+; BUILD:
+;   M80 =HEPATCH
+;   L80 HEPATCH,HEPATCH/N/E
+;
+; USAGE:
+;   A>HEPATCH <color>
+;     color = 0  mono
+;     color = 1  colour
+;
+;   Examples:
+;     HEPATCH 0     mono
+;     HEPATCH 1     colour
+;============================================================
+
+BDOS    EQU     0005H
+WBOOT   EQU     0000H
+BF_PRTSTR EQU   9
+BF_CONOUT EQU   2
+BF_FOPEN  EQU   15
+BF_FCLOSE EQU   16
+BF_FDEL   EQU   19
+BF_FREAD  EQU   20
+BF_FWRITE EQU   21
+BF_FMAKE  EQU   22
+BF_SETDMA EQU   26
+RECSIZ  EQU     128
+CR      EQU     0DH
+LF      EQU     0AH
+CPMEOF  EQU     1AH
+
+        CSEG
+
+;------------------------------------------------------------
+; Entry - START is the COM-file entry point.
+; L80 emits 'JMP START' at 0100H from the END directive, so
+; CSEG may begin anywhere; no ORG 100H (which inside CSEG
+; creates the dirty-TPA leak bug seen in older SDIR builds).
+;------------------------------------------------------------
+START:
+        LXI     SP,STACK
+
+        ; Parse command line
+        LDA     0080H           ; command tail length
+        ORA     A
+        JZ      USAGE
+        LXI     H,0081H
+        CALL    SKIPSP
+        MOV     A,M
+        SUI     '0'
+        JC      USAGE           ; below '0'
+        CPI     2
+        JNC     USAGE           ; above '1'
+        STA     COLVAL
+
+        ; Load HECONFIG.INC into FBUF
+        LXI     D,MSGLD
+        CALL    PRINT
+        LXI     D,FBUF
+        MVI     C,BF_SETDMA
+        CALL    BDOS
+        XRA     A
+        STA     FCB+12          ; extent
+        STA     FCB+32          ; current record
+        LXI     D,FCB
+        MVI     C,BF_FOPEN
+        CALL    BDOS
+        INR     A
+        JZ      ERROPN
+        LXI     D,FCB
+        MVI     C,BF_FREAD
+        CALL    BDOS            ; one record: file is < 128 bytes
+
+        ; Restore default DMA and close the read-open
+        LXI     D,0080H
+        MVI     C,BF_SETDMA
+        CALL    BDOS
+        LXI     D,FCB
+        MVI     C,BF_FCLOSE
+        CALL    BDOS
+
+        ; Patch COLOR EQU to the new digit
+        LXI     H,COLPAT
+        LDA     COLVAL
+        ADI     '0'
+        CALL    PATCH
+        JC      ERRCOL
+
+        ; Write FBUF back as a fresh file
+        LXI     D,MSGWR
+        CALL    PRINT
+        XRA     A
+        STA     FCB+12
+        STA     FCB+32
+        LXI     D,FCB
+        MVI     C,BF_FDEL       ; delete old
+        CALL    BDOS
+        XRA     A
+        STA     FCB+12
+        STA     FCB+32
+        LXI     D,FCB
+        MVI     C,BF_FMAKE      ; create new
+        CALL    BDOS
+        INR     A
+        JZ      ERRWRT
+        XRA     A
+        STA     FCB+32
+        LXI     D,FBUF
+        MVI     C,BF_SETDMA
+        CALL    BDOS
+        LXI     D,FCB
+        MVI     C,BF_FWRITE
+        CALL    BDOS
+        ORA     A
+        JNZ     ERRWRT
+        LXI     D,0080H
+        MVI     C,BF_SETDMA
+        CALL    BDOS
+        LXI     D,FCB
+        MVI     C,BF_FCLOSE
+        CALL    BDOS
+
+        ; Summary
+        LXI     D,MSGDN1
+        CALL    PRINT
+        LDA     COLVAL
+        ADI     '0'
+        CALL    CONOUT
+        LXI     D,MSGCRLF
+        CALL    PRINT
+        JMP     WBOOT
+
+;------------------------------------------------------------
+; PATCH - Find NUL-terminated pattern at HL in FBUF, then
+; overwrite the first non-whitespace byte that follows with
+; the ASCII digit in A.
+; Entry:  HL = pattern address (e.g. COLPAT)
+;         A  = ASCII digit to write
+; Exit:   CY set if pattern not found, clear on success
+;         HL, DE, A clobbered
+;------------------------------------------------------------
+PATCH:
+        STA     PDIG
+        SHLD    PPAT
+        LXI     H,FBUF
+PATLP:  ; End of buffer?
+        PUSH    D
+        LXI     D,FBUF+RECSIZ
+        MOV     A,L
+        SUB     E
+        MOV     A,H
+        SBB     D
+        POP     D
+        JNC     PATNF           ; HL >= FBUF+RECSIZ: past end
+        ; Try pattern match at HL
+        PUSH    H               ; save scan position
+        LHLD    PPAT
+        XCHG                    ; DE = pattern
+        POP     H
+        PUSH    H               ; re-save scan position
+PATCMP: LDAX    D
+        ORA     A
+        JZ      PATFND          ; end of pattern -> match
+        CMP     M
+        JNZ     PATNXT
+        INX     H
+        INX     D
+        JMP     PATCMP
+PATFND: POP     D               ; discard saved scan position
+PATSKP: MOV     A,M             ; skip spaces / tabs
+        CPI     ' '
+        JZ      PATSK1
+        CPI     09H
+        JZ      PATSK1
+        JMP     PATDO
+PATSK1: INX     H
+        JMP     PATSKP
+PATDO:  LDA     PDIG            ; HL -> digit to overwrite
+        MOV     M,A
+        ORA     A               ; clear carry (success)
+        RET
+PATNXT: POP     H
+        INX     H
+        JMP     PATLP
+PATNF:  STC
+        RET
+
+;------------------------------------------------------------
+; Helpers
+;------------------------------------------------------------
+SKIPSP: MOV     A,M
+        CPI     ' '
+        RNZ
+        INX     H
+        JMP     SKIPSP
+
+PRINT:  MVI     C,BF_PRTSTR
+        JMP     BDOS
+
+CONOUT: MOV     E,A
+        MVI     C,BF_CONOUT
+        JMP     BDOS
+
+;------------------------------------------------------------
+; Error handlers (print message, warm boot)
+;------------------------------------------------------------
+USAGE:  LXI     D,MSGUSE
+        CALL    PRINT
+        JMP     WBOOT
+ERROPN: LXI     D,MSGOPN
+        CALL    PRINT
+        JMP     WBOOT
+ERRCOL: LXI     D,MSGNCL
+        CALL    PRINT
+        JMP     WBOOT
+ERRWRT: LXI     D,MSGWRE
+        CALL    PRINT
+        JMP     WBOOT
+
+;------------------------------------------------------------
+; FCB for HECONFIG.INC on the default drive
+;------------------------------------------------------------
+FCB:    DB      0,'HECONFIG','INC',0,0,0,0
+        DS      20              ; rest of FCB
+
+;------------------------------------------------------------
+; Pattern strings (NUL-terminated)
+;------------------------------------------------------------
+COLPAT: DB      'COLOR   EQU',0
+
+;------------------------------------------------------------
+; Messages
+;------------------------------------------------------------
+MSGUSE: DB      'Usage: HEPATCH <color>',CR,LF
+        DB      '  color = 0  mono',CR,LF
+        DB      '  color = 1  colour',CR,LF,'$'
+MSGLD:  DB      'Reading HECONFIG.INC... $'
+MSGWR:  DB      'Writing HECONFIG.INC... $'
+MSGDN1: DB      'Done: COLOR=$'
+MSGCRLF: DB     CR,LF,'$'
+MSGOPN: DB      'Error: HECONFIG.INC not found.',CR,LF,'$'
+MSGNCL: DB      'Error: COLOR EQU not found in file.',CR,LF,'$'
+MSGWRE: DB      'Error: cannot write HECONFIG.INC.',CR,LF,'$'
+
+;------------------------------------------------------------
+; DATA SEGMENT
+;------------------------------------------------------------
+        DSEG
+
+COLVAL: DB      0               ; new COLOR digit (0 or 1)
+PPAT:   DW      0               ; PATCH: pattern pointer
+PDIG:   DB      0               ; PATCH: ASCII digit
+
+        DS      64
+STACK   EQU     $
+
+; File buffer - one CP/M record
+FBUF:   DS      RECSIZ
+
+        END     START
+

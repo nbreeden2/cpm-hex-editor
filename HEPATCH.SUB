@@ -1,0 +1,5 @@
+; HEPATCH.SUB - build the HEPATCH.COM config patcher.
+; Run once, before any HEDIT variant .SUB. Produces HEPATCH.COM.
+M80 =HEPATCH
+L80 HEPATCH,HEPATCH/N/E
+
