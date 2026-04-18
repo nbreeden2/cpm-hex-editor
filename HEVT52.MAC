@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEVT52.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.04
+; VERSION: 1.05
 ; DATE:    2026-04-18
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -87,7 +87,7 @@ SGRCYN:  DB     '$'                  ; colour accent: n/a, no-op
 SGRYEL:  DB     '$'                  ; colour accent: n/a, no-op
 
 ;--- Separator version + build string ------------------
-SPRVER:  DB     ' HEDIT v1.04 ','$'
+SPRVER:  DB     ' HEDIT v1.05 ','$'
 SPRBLD:  DB     'Build 001 ','$'
 SPRLEN  EQU     24              ; length of SPRVER + SPRBLD (excluding $)
 

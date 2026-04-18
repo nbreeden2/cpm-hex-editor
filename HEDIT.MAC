@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEDIT.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.04
+; VERSION: 1.05
 ; DATE:    1984-01-01
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -186,9 +186,14 @@ BFINLP: MVI     M,' '
         JZ      STNOFL          ; no file, skip load
         LXI     D,DFTFCB        ; DE = FCB address
         CALL    FIOPEN          ; load into buffer
+        ORA     A               ; 0 = success, 0FFH = error
+        JNZ     STDONE          ; error: FIOPEN already drew and
+                                ; posted the status message; don't
+                                ; set DIRTY (that would wipe it)
 STNOFL:
         MVI     A,1
         STA     DIRTY           ; force full screen redraw
+STDONE:
 
 ;------------------------------------------------------------
 ; MAINLP - Main edit loop

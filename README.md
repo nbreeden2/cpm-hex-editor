@@ -2,7 +2,7 @@
 
 **Platform:** CP/M 2.2, Intel 8080
 **Assembler:** Microsoft M80 / L80
-**Version:** 1.04
+**Version:** 1.05
 
 ---
 

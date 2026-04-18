@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEXMNVT.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.04
+; VERSION: 1.05
 ; DATE:    2026-04-18
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -236,6 +236,10 @@ MNOPEN:
         JZ      MNODNE          ; cancelled
         LXI     D,0             ; DE=0: WRKFCB already set
         CALL    FIOPEN
+        ORA     A               ; 0 = success, 0FFH = error
+        JNZ     MNODNE          ; error: FIOPEN already redrew and
+                                ; posted the error on the status
+                                ; line; don't force another redraw
         MVI     A,1
         STA     DIRTY
 MNODNE: RET

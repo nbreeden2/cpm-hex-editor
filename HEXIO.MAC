@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEXIO.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.04
+; VERSION: 1.05
 ; DATE:    1984-01-01
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -35,6 +35,9 @@
 	EXTRN	OUTCHAR		; output one character
 	EXTRN	CURGOTO		; position cursor (B=row,C=col)
 	EXTRN	INFOBAR		; update info bar
+	EXTRN	SCRDRAW		; full screen redraw
+	EXTRN	DIRTY		; full-redraw flag
+	EXTRN	DRTLINE		; line-only redraw flag
 	EXTRN	RSTAT		; runtime status row
 
 ;--- Exports ----------------------------------------------
@@ -285,7 +288,7 @@ FIHDLP:
 	JMP	FIHLP		; next line
 
 FIFULL:
-	; Buffer full - close file, show error
+	; Buffer full - close file, wipe partial load, show error.
 	LXI	D,CMDTAIL
 	MVI	C,BF_SETDMA
 	CALL	BDOS
@@ -295,8 +298,20 @@ FIFULL:
 	CALL	FIBUFCLR
 	XRA	A
 	STA	ISLOAD
+	; Refresh the screen here (showing the now-empty edit area
+	; with the new filename in the info bar) and emit the error
+	; message AFTER the redraw.  SCRDRAW ends with STATCLR, so
+	; if we merely set DIRTY=1 and returned, the caller's main
+	; loop would run SCRDRAW and wipe the message.  Drawing
+	; here and clearing the dirty flags keeps the error visible
+	; on the status line until the user presses a key.
+	CALL	SCRDRAW
+	CALL	INFOBAR
 	LXI	D,FULLMSG
 	CALL	STATMSG
+	XRA	A
+	STA	DIRTY
+	STA	DRTLINE
 	MVI	A,0FFH		; return error
 	RET
 

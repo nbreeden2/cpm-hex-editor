@@ -1,7 +1,7 @@
 ;============================================================
 ; FILE:    HEXHELP.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
-; VERSION: 1.04
+; VERSION: 1.05
 ; DATE:    1984-01-01
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
@@ -199,7 +199,7 @@ HLPKEY: MVI     E,0FFH
 ; String constants (no escape sequences - terminal agnostic)
 ;=============================================================
 
-HLPHDR:  DB     ' HEDIT v1.04 Key Reference$'
+HLPHDR:  DB     ' HEDIT v1.05 Key Reference$'
 HLPHDL  EQU     27              ; length of HLPHDR (excluding $)
 HLPFTR:  DB     ' Press any key to return...$'
 HLPFTL  EQU     27              ; length of HLPFTR (excluding $)
