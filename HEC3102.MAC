@@ -1,29 +1,36 @@
 ;============================================================
-; FILE:    HEADM31.MAC
+; FILE:    HEC3102.MAC
 ; PROJECT: HEDIT - Hex Editor for CP/M 2.2
 ; VERSION: 1.03
 ; DATE:    2026-04-18
 ; AUTHOR:  Claude Code and RetroTechReboot
 ;------------------------------------------------------------
 ; DESCRIPTION:
-;   Lear Siegler ADM-31 terminal driver for HEDIT. Drop-in
-;   replacement for HEXSCR.MAC. Same PUBLIC exports, same
-;   EXTRN imports. No colour, no bold/dim. Uses ADM-31
-;   escape sequences:
+;   Cromemco 3102 (Beehive DM10/DM30) terminal driver for
+;   HEDIT. Drop-in replacement for HEXSCR.MAC. Same PUBLIC
+;   exports, same EXTRN imports. No colour. Uses Cromemco
+;   3102 escape sequences:
 ;
-;     Cursor address: ESC = row+1FH col+1FH
-;     Clear screen:   ESC *  (clear + home)
-;     Clear to EOL:   ESC T
-;     Reverse video:  ESC G 4 / ESC G 0 (all attributes off)
+;     Cursor address: ESC F row+1FH col+1FH
+;     Clear screen:   ESC E
+;     Clear to EOL:   ESC K
+;     Cursor home:    ESC H
+;     Reverse video:  ESC d P / ESC d @
+;     Normal video:   ESC m   (also clears reverse)
 ;
-;   DETSIZ is a stub (ADM-31 has no DSR). Leaves the
+;   Arrow keys send: ^K(up) ^J(down) ^H(left) ^L(right),
+;   which conflict with HEDIT's WordStar block prefix,
+;   backspace, and find-next bindings. Use the diamond
+;   (^E/^X/^S/^D) for cursor motion.
+;
+;   DETSIZ is a stub (C3102 has no DSR). Leaves the
 ;   compile-time defaults in place (24-row).
 ;
-;   Build: M80 =HEADM31
-;   Link:  L80 HEDIT,HEADM31,HEADM31K,HEXGAP,HEXIO,HEXMNVT,...
+;   Build: M80 =HEC3102
+;   Link:  L80 HEDIT,HEC3102,HEC3102K,HEXGAP,HEXIO,HEXMNVT,...
 ;------------------------------------------------------------
 ; REVISION HISTORY:
-;   1.03 2026-04-18  Forked from HEVT52.MAC for ADM-31
+;   1.03 2026-04-18  Forked from HEADM31.MAC for Cromemco 3102
 ;============================================================
 
         INCLUDE HEDIT.INC
@@ -60,20 +67,20 @@
         PUBLIC  DETSIZ          ; detect terminal rows via DSR
 
 ;--- ESC sequence string constants --------------------
-; ADM-31 escapes are short 2- or 3-byte sequences except
-; ESC = <row> <col> for cursor addressing (handled by CURGOTO).
-CLRSTR:  DB     ESC,'*','$'          ; clear screen + home
+; Cromemco 3102 escapes are 2- or 3-byte sequences except
+; ESC F <row> <col> for cursor addressing (handled by CURGOTO).
+CLRSTR:  DB     ESC,'E','$'          ; clear screen
 CLREOL:
-CLRTOE:  DB     ESC,'T','$'          ; clear to end of line
-HIDCUR:  DB     '$'                  ; hide cursor: no ADM-31 equivalent
-SHWCUR:  DB     '$'                  ; show cursor: no ADM-31 equivalent
+CLRTOE:  DB     ESC,'K','$'          ; clear to end of line
+HIDCUR:  DB     '$'                  ; hide cursor: no C3102 equivalent
+SHWCUR:  DB     '$'                  ; show cursor: no C3102 equivalent
 APPKPD:  DB     '$'                  ; application keypad: n/a
-; Visual attributes via ESC G <n>: 0=normal, 4=reverse.
+; Visual attributes via ESC d <char>: @ = off, P = reverse.
 SGRRES:
-ATROFF:  DB     ESC,'G','0','$'      ; all attributes off
+ATROFF:  DB     ESC,'d','@','$'      ; reverse video off
 SGRREV:
-ATTRON:  DB     ESC,'G','4','$'      ; reverse video on
-; Bold/dim/colour have no clean ADM-31 analogue -- emit nothing
+ATTRON:  DB     ESC,'d','P','$'      ; reverse video on
+; Bold/dim/colour have no clean C3102 analogue -- emit nothing
 ; so the shared rendering code can keep calling OUTSTR with no
 ; visible effect.
 SGRBLD:  DB     '$'                  ; bold: n/a, no-op
@@ -115,11 +122,11 @@ HXTBL:   DB     '0123456789ABCDEF'
         CSEG
 
 SCRINIT:
-        LXI     D,HIDCUR        ; hide cursor during init (no-op on ADM-31)
+        LXI     D,HIDCUR        ; hide cursor during init (no-op on C3102)
         CALL    OUTSTR
-        LXI     D,CLRSTR        ; ESC * - clear screen + home
+        LXI     D,CLRSTR        ; ESC E - clear screen
         CALL    OUTSTR
-        LXI     D,APPKPD        ; application keypad mode (no-op on ADM-31)
+        LXI     D,APPKPD        ; application keypad mode (no-op on C3102)
         CALL    OUTSTR
         ; Draw column header (row 2)
         CALL    HDRDRAW
@@ -1173,8 +1180,8 @@ OUTSTR:
 
 ;=============================================================
 ; CURGOTO - Position cursor at B=row, C=col (1-based).
-; ADM-31 direct cursor addressing: ESC = <row+1FH> <col+1FH>.
-; (1-based row/col + 1FH = 0-based + 20H, the ADM-31 convention.)
+; Cromemco 3102 direct cursor: ESC F <row+1FH> <col+1FH>.
+; (1-based row/col + 1FH = 0-based + 20H, the C3102 convention.)
 ; Entry:  B = row (1-based), C = col (1-based)
 ; Exit:   All regs clobbered
 ;=============================================================
@@ -1182,7 +1189,7 @@ CURGOTO:
         PUSH    B               ; save row(B) col(C)
         MVI     A,ESC
         CALL    OUTCHAR
-        MVI     A,'='
+        MVI     A,'F'
         CALL    OUTCHAR
         POP     B               ; restore row(B) col(C)
         MOV     A,B

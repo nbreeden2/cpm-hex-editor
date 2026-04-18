@@ -88,7 +88,7 @@ SGRYEL:  DB     '$'                  ; colour accent: n/a, no-op
 
 ;--- Separator version + build string ------------------
 SPRVER:  DB     ' HEDIT v1.03 ','$'
-SPRBLD:  DB     'Build 004 ','$'
+SPRBLD:  DB     'Build 005 ','$'
 SPRLEN  EQU     24              ; length of SPRVER + SPRBLD (excluding $)
 
 ;--- Info bar label strings ---------------------------

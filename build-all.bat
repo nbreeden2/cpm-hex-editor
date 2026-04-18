@@ -7,6 +7,7 @@ REM   HEDIT.COM    - VT100/ANSI mono
 REM   HEDIT-CL.COM - VT100/ANSI color
 REM   HEDIT-52.COM - VT52 (mono only)
 REM   HEDIT-AD.COM - Lear Siegler ADM-31 (mono only)
+REM   HEDIT-CR.COM - Cromemco 3102 (mono only)
 REM
 REM Requires: cpmulator.exe, M80.COM, L80.COM, Python (CPMFMT.PY)
 REM ----------------------------------------------------------------
@@ -18,6 +19,7 @@ if exist HEDIT.COM    del HEDIT.COM    2>nul
 if exist HEDIT-CL.COM del HEDIT-CL.COM 2>nul
 if exist HEDIT-52.COM del HEDIT-52.COM 2>nul
 if exist HEDIT-AD.COM del HEDIT-AD.COM 2>nul
+if exist HEDIT-CR.COM del HEDIT-CR.COM 2>nul
 if exist *.REL        del *.REL        2>nul
 
 REM --- Format all source files (once) ---
@@ -26,7 +28,7 @@ python CPMFMT.PY
 if errorlevel 1 goto fail
 
 echo Assembling shared modules...
-for %%M in (HEDIT HEXKEY HEXGAP HEXIO HEXMENU HEXMNVT HEXSRCH HEXBLK HEXKBND HEXVIRT HEXHELP HEVT52 HEADM31 HEADM31K) do (
+for %%M in (HEDIT HEXKEY HEXGAP HEXIO HEXMENU HEXMNVT HEXSRCH HEXBLK HEXKBND HEXVIRT HEXHELP HEVT52 HEADM31 HEADM31K HEC3102 HEC3102K) do (
     cpmulator M80.COM =%%M
     echo %%M
 	pause
@@ -35,7 +37,7 @@ for %%M in (HEDIT HEXKEY HEXGAP HEXIO HEXMENU HEXMNVT HEXSRCH HEXBLK HEXKBND HEX
 
 REM --- Build each variant ---
 echo.
-echo --- Variant 1/4: HEDIT.COM (VT100 mono) ---
+echo --- Variant 1/5: HEDIT.COM (VT100 mono) ---
 python HEBUILD.PY 0
 if errorlevel 1 goto fail
 python CPMFMT.PY HECONFIG.INC
@@ -48,7 +50,7 @@ copy /y HEDIT.COM HEDIT-M.COM >nul
 echo Built HEDIT.COM (VT100 mono)
 
 echo.
-echo --- Variant 2/4: HEDIT-CL.COM (VT100 color) ---
+echo --- Variant 2/5: HEDIT-CL.COM (VT100 color) ---
 python HEBUILD.PY 1
 if errorlevel 1 goto fail
 python CPMFMT.PY HECONFIG.INC
@@ -61,7 +63,7 @@ copy /y HEDIT.COM HEDIT-CL.COM >nul
 echo Built HEDIT-CL.COM (VT100 color)
 
 echo.
-echo --- Variant 3/4: HEDIT-52.COM (VT52) ---
+echo --- Variant 3/5: HEDIT-52.COM (VT52) ---
 REM VT52 is always mono; uses HEVT52 for screen + HEXMNVT for menu.
 REM No HEXSCR reassembly needed -- the VT100-specific HEXSCR.REL
 REM is simply not passed to L80.
@@ -71,13 +73,22 @@ copy /y HEDIT.COM HEDIT-52.COM >nul
 echo Built HEDIT-52.COM (VT52)
 
 echo.
-echo --- Variant 4/4: HEDIT-AD.COM (ADM-31) ---
+echo --- Variant 4/5: HEDIT-AD.COM (ADM-31) ---
 REM ADM-31 uses HEADM31 for screen, HEADM31K for keys, HEXMNVT
 REM for menu. Always mono.
 cpmulator L80.COM HEDIT,HEADM31,HEADM31K,HEXGAP,HEXIO,HEXMNVT,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
 if errorlevel 1 goto fail
 copy /y HEDIT.COM HEDIT-AD.COM >nul
 echo Built HEDIT-AD.COM (ADM-31)
+
+echo.
+echo --- Variant 5/5: HEDIT-CR.COM (Cromemco 3102) ---
+REM Cromemco 3102 uses HEC3102 for screen, HEC3102K for keys,
+REM HEXMNVT for menu. Always mono.
+cpmulator L80.COM HEDIT,HEC3102,HEC3102K,HEXGAP,HEXIO,HEXMNVT,HEXSRCH,HEXBLK,HEXKBND,HEXVIRT,HEXHELP,HEDIT/N/E
+if errorlevel 1 goto fail
+copy /y HEDIT.COM HEDIT-CR.COM >nul
+echo Built HEDIT-CR.COM (Cromemco 3102)
 
 REM --- Restore source to default (mono) ---
 python HEBUILD.PY 0
@@ -93,6 +104,7 @@ echo   HEDIT.COM    - VT100/ANSI mono
 echo   HEDIT-CL.COM - VT100/ANSI color
 echo   HEDIT-52.COM - VT52
 echo   HEDIT-AD.COM - ADM-31
+echo   HEDIT-CR.COM - Cromemco 3102
 goto end
 
 :fail

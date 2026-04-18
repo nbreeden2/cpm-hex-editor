@@ -1,0 +1,462 @@
+;============================================================
+; FILE:    HEC3102K.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.03
+; DATE:    2026-04-18
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Key input for Cromemco 3102 terminal. Drop-in replacement
+;   for HEXKEY.MAC. Extends the VT100 decoder with direct
+;   ESC+letter handling so real C3102 hardware can use its
+;   native arrow-key sequences (ESC A/B/C/D) and the same
+;   binary runs untouched through a C3102-emulating xterm
+;   that sends VT100 CSI (ESC [ A/B/C/D) from a PC keyboard.
+;
+;   The trick: after ESC, any A-Z letter that is not '[' or
+;   'O' is treated as a CSI sequence with param = 0, then
+;   looked up in CSITBL. The existing CSITBL entries for
+;   'A'/'B'/'C'/'D' map to CURUP/CURDN/CURRT/CURLT, so both
+;   paths share the same action.
+;
+;   Note: C3102 arrow keys also send raw ^K/^J/^H/^L which
+;   collide with HEDIT's WordStar block prefix, backspace,
+;   and find-next. Users should prefer the diamond
+;   (^E/^X/^S/^D) for cursor motion.
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.03 2026-04-18  Forked from HEXKEY.MAC for Cromemco 3102
+;============================================================
+
+        INCLUDE HEDIT.INC
+
+        PUBLIC  GETKEY          ; read next key
+        PUBLIC  KBDTBL          ; ctrl-code dispatch table
+        PUBLIC  CSITBL          ; CSI sequence table
+        PUBLIC  SS3TBL          ; SS3 sequence table
+        PUBLIC  CTKTBL          ; Ctrl-K prefix table
+        PUBLIC  CTQTBL          ; Ctrl-Q prefix table
+
+; Key state machine states
+KST_IDL EQU     0               ; idle, no prefix
+KST_ESC EQU     1               ; received ESC
+KST_CSI EQU     2               ; received ESC [
+KST_SS3 EQU     3               ; received ESC O
+KST_CSP EQU     4               ; CSI with param digits
+KST_CTK EQU     5               ; Ctrl-K prefix active
+KST_CTQ EQU     6               ; Ctrl-Q prefix active
+
+; ESC timeout loop count (~1ms at 2MHz)
+ESCTMO  EQU     500
+
+;=============================================================
+; GETKEY - Read next key, return decoded action or char.
+; Entry:  (none)
+; Exit:   B = KT_NONE (no key), KT_ACT, or KT_CHAR
+;         C = action code or character
+;         All other regs clobbered
+; Note:   Blocks until a key is available.
+;=============================================================
+
+        CSEG
+
+GETKEY:
+        ; Poll until a character is available (blocking)
+GKPOLL: MVI     E,0FFH          ; RAWIO: request input
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A               ; 0 = no char
+        JZ      GKPOLL
+
+        ; Save character, then check key state
+        MOV     D,A             ; D = received byte
+        LDA     KEYSTATE
+        ORA     A
+        JNZ     GKSTATE         ; in escape sequence
+
+        ; Idle state: restore saved character and classify
+        MOV     A,D             ; restore received byte
+
+GKIDLE:
+        ; A = received byte
+        CPI     ESC             ; ESC starts a sequence
+        JZ      GKESC
+        CPI     CTRLK           ; Ctrl-K prefix
+        JZ      GKCTLK
+        CPI     CTRLQ           ; Ctrl-Q prefix
+        JZ      GKCTLQ
+        CPI     ' '             ; < space = control code
+        JC      GKCTRL
+        CPI     DEL             ; DEL key?
+        JZ      GKDEL
+        JNC     GKHIGH          ; > DEL (80h+): high-byte key
+        ; 0x20-0x7E: printable ASCII character
+        MOV     C,A
+        MVI     B,KT_CHAR
+        RET
+
+GKCTRL: ; Control character 00-1F: look up in KBDTBL
+        MOV     L,A
+        MVI     H,0
+        LXI     D,KBDTBL
+        DAD     D               ; HL = &KBDTBL[A]
+        MOV     C,M             ; C = action code
+        MVI     B,KT_ACT
+        MOV     A,C
+        ORA     A
+        RNZ                     ; return action
+        MVI     B,KT_NONE       ; no action mapped
+        RET
+
+GKDEL:  MVI     C,ACT_DELRT     ; DEL = delete right
+        MVI     B,KT_ACT
+        RET
+
+GKHIGH: ; High-byte key (80h-FFh): look up in HKYTBL
+        MOV     D,A             ; D = byte to find
+        LXI     H,HKYTBL
+        JMP     TBLSRCH         ; search (byte,action) table
+
+GKESC:  MVI     A,KST_ESC       ; enter ESC state
+        STA     KEYSTATE
+        ; Try to read next byte with timeout
+        LXI     B,ESCTMO
+ESCTL:  PUSH    B               ; save timeout counter
+        MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        POP     B               ; restore timeout counter
+        ORA     A
+        JNZ     GKESC2          ; got a byte
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     ESCTL
+        ; Timeout: ESC alone = open menu
+        XRA     A
+        STA     KEYSTATE        ; back to idle
+        MVI     C,ACT_MENU
+        MVI     B,KT_ACT
+        RET
+
+GKESC2: ; A = byte after ESC
+        MOV     D,A             ; save byte
+        XRA     A
+        STA     KEYSTATE        ; reset state
+        MOV     A,D             ; restore byte
+        CPI     '['             ; ESC [ = CSI
+        JZ      GKCSI
+        CPI     'O'             ; ESC O = SS3
+        JZ      GKSS3
+        ; C3102 extension: ESC+letter is a direct command
+        ; (arrow keys, clear, etc.). Route any A-Z to the CSI
+        ; table with param = 0. Non-matching letters fall
+        ; through to silent consumption.
+        CPI     'A'
+        JC      GKESCU          ; below 'A': unknown
+        CPI     'Z'+1
+        JNC     GKESCU          ; above 'Z': unknown
+        XRA     A
+        STA     CSIPARM         ; param = 0
+        MOV     A,D             ; A = final byte
+        JMP     GKCFIN          ; look up in CSITBL
+GKESCU: ; Unknown ESC sequence - silently consume
+        MVI     B,KT_NONE
+        RET
+
+GKCSI:
+        ; Read CSI parameter and final byte
+        LXI     B,ESCTMO
+        XRA     A
+        STA     CSIPARM         ; clear parameter
+GKCSILP:
+        PUSH    B               ; save timeout counter
+        MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        POP     B               ; restore timeout counter
+        ORA     A
+        JNZ     GKCSIB
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GKCSILP
+        MVI     B,KT_NONE       ; timeout
+        RET
+
+GKCSIB: ; A = byte of CSI sequence
+        CPI     '0'
+        JC      GKCFIN          ; < '0' = final
+        CPI     '9'+1
+        JNC     GKCFIN          ; > '9' = final
+        ; Digit: accumulate CSIPARM = CSIPARM * 10 + (A - '0')
+        SUI     '0'             ; A = digit value (0-9)
+        MOV     E,A             ; E = digit value
+        LDA     CSIPARM         ; A = current param
+        ADD     A               ; *2
+        MOV     D,A             ; D = param*2
+        ADD     A               ; *4
+        ADD     A               ; *8
+        ADD     D               ; +param*2 = *10
+        ADD     E               ; + digit value
+        STA     CSIPARM
+        JMP     GKCSILP
+
+GKCFIN: ; A = CSI final byte
+        MOV     D,A             ; save final byte
+        LDA     CSIPARM
+        MOV     E,A             ; E = parameter
+        MOV     A,D             ; restore final
+        ; Look up in CSI table
+        LXI     H,CSITBL
+GCSILK: MOV     A,M
+        ORA     A
+        JZ      GCSINF          ; end of table
+        CMP     D               ; match final byte?
+        JNZ     GCSINX
+        INX     H
+        MOV     A,M             ; get parameter
+        CMP     E               ; match parameter?
+        JNZ     GCSKP2          ; param mismatch: skip 2
+        INX     H
+        MOV     C,M             ; C = action code
+        MVI     B,KT_ACT
+        RET
+GCSKP2: INX     H               ; skip param
+        INX     H               ; skip action
+        JMP     GCSILK
+GCSINX: INX     H               ; skip final
+        INX     H               ; skip param
+        INX     H               ; skip action
+        JMP     GCSILK
+GCSINF: MVI     B,KT_NONE
+        RET
+
+GKSS3:
+        ; Read SS3 final byte
+        LXI     B,ESCTMO
+GKSS3L: PUSH    B               ; save timeout counter
+        MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        POP     B               ; restore timeout counter
+        ORA     A
+        JNZ     GKSS3B
+        DCX     B
+        MOV     A,B
+        ORA     C
+        JNZ     GKSS3L
+        MVI     B,KT_NONE
+        RET
+
+GKSS3B: ; A = SS3 final byte
+        MOV     D,A             ; D = byte to find
+        LXI     H,SS3TBL
+GS3LK:  MOV     A,M             ; A = table char
+        ORA     A               ; end of table?
+        JZ      GS3NF
+        CMP     D               ; match final byte?
+        JZ      GS3FND
+        INX     H               ; skip char
+        INX     H               ; skip action
+        JMP     GS3LK
+GS3FND: INX     H
+        MOV     C,M             ; C = action code
+        MVI     B,KT_ACT
+        RET
+GS3NF:  MVI     B,KT_NONE
+        RET
+
+GKIDZP: ; ESC Z identify - ignore, return no action
+        MVI     B,KT_NONE
+        RET
+
+GKCTLK: ; Ctrl-K prefix: read next byte, look up
+        MVI     A,KST_CTK
+        STA     KEYSTATE
+        CALL    GKWAIT          ; blocking read
+        XRA     A
+        STA     KEYSTATE
+        LXI     H,CTKTBL
+        JMP     TBLSRCH         ; search (char,action) list
+
+GKCTLQ: ; Ctrl-Q prefix: read next byte, look up
+        MVI     A,KST_CTQ
+        STA     KEYSTATE
+        CALL    GKWAIT          ; blocking read
+        XRA     A
+        STA     KEYSTATE
+        LXI     H,CTQTBL
+        JMP     TBLSRCH
+
+GKSTATE: ; Currently in a prefix state - should not
+         ; reach here from polling loop. Reset.
+        XRA     A
+        STA     KEYSTATE
+        MVI     B,KT_NONE
+        RET
+
+;------------------------------------------------------------
+; GKWAIT - Blocking read of one byte from console.
+; Exit:   A = byte; D = byte (saved)
+;------------------------------------------------------------
+GKWAIT:
+        MVI     E,0FFH          ; raw console input
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JZ      GKWAIT          ; no char yet, poll
+        MOV     D,A
+        RET
+
+;------------------------------------------------------------
+; TBLSRCH - Search (char, action) table for char in D.
+; Entry:  HL = table start (ends with 0,0 sentinel)
+;         D  = character to find
+; Exit:   B=KT_ACT, C=action if found; B=KT_NONE if not
+;------------------------------------------------------------
+TBLSRCH:
+        MOV     A,M
+        ORA     A
+        JZ      TBLNF           ; end of table
+        CMP     D
+        JZ      TBLFND
+        INX     H
+        INX     H               ; skip action byte
+        JMP     TBLSRCH
+TBLFND: INX     H
+        MOV     C,M             ; C = action code
+        MVI     B,KT_ACT
+        RET
+TBLNF:  MVI     B,KT_NONE
+        RET
+
+;=============================================================
+; Key dispatch tables
+;=============================================================
+
+; KBDTBL - Action for ctrl codes 0-31 (index = ctrl code)
+; 0 = no action for that code
+KBDTBL:
+        DB      0               ;  0 NUL - unused
+        DB      0               ;  1 ^A  - unused
+        DB      0               ;  2 ^B  - unused
+        DB      ACT_PGDN        ;  3 ^C  - page down
+        DB      ACT_CURRT       ;  4 ^D  - cursor right
+        DB      ACT_CURUP       ;  5 ^E  - cursor up
+        DB      0               ;  6 ^F  - unused
+        DB      ACT_DELRT       ;  7 ^G  - delete right
+        DB      ACT_DELLF       ;  8 ^H  - backspace
+        DB      ACT_TOGMD       ;  9 ^I  - toggle hex/ascii
+        DB      0               ; 10 ^J  - unused
+        DB      0               ; 11 ^K  - prefix (block)
+        DB      ACT_FNDNX       ; 12 ^L  - find next
+        DB      ACT_ENTER       ; 13 ^M  - Enter key
+        DB      0               ; 14 ^N  - unused
+        DB      ACT_BLKCP       ; 15 ^O  - block copy
+        DB      0               ; 16 ^P  - unused
+        DB      0               ; 17 ^Q  - prefix (quick)
+        DB      ACT_PGUP        ; 18 ^R  - page up
+        DB      ACT_CURLT       ; 19 ^S  - cursor left
+        DB      0               ; 20 ^T  - unused
+        DB      0               ; 21 ^U  - unused
+        DB      ACT_TOGIN       ; 22 ^V  - toggle ins/ovr
+        DB      0               ; 23 ^W  - unused
+        DB      ACT_CURDN       ; 24 ^X  - cursor down
+        DB      ACT_DELRW       ; 25 ^Y  - delete row
+        DB      0               ; 26 ^Z  - unused
+        DB      ACT_MENU        ; 27 ESC - menu
+        DB      0               ; 28 FS  - unused
+        DB      0               ; 29 GS  - unused
+        DB      0               ; 30 RS  - unused
+        DB      0               ; 31 US  - unused
+
+; CSI table: (final_byte, parameter, action) triples
+; Ends with 0,0,0
+CSITBL:
+        DB      'A',0,ACT_CURUP     ; ESC[A up arrow
+        DB      'B',0,ACT_CURDN     ; ESC[B down arrow
+        DB      'C',0,ACT_CURRT     ; ESC[C right arrow
+        DB      'D',0,ACT_CURLT     ; ESC[D left arrow
+        DB      'H',0,ACT_HOME      ; ESC[H home (xterm)
+        DB      'F',0,ACT_END       ; ESC[F end (xterm)
+        DB      '~',1,ACT_HOME      ; ESC[1~ home VT220
+        DB      '~',2,ACT_TOGIN     ; ESC[2~ insert
+        DB      '~',3,ACT_DELRT     ; ESC[3~ delete
+        DB      '~',4,ACT_END       ; ESC[4~ end VT220
+        DB      '~',5,ACT_PGUP      ; ESC[5~ page up
+        DB      '~',6,ACT_PGDN      ; ESC[6~ page down
+        DB      0,0,0               ; end of table
+
+; SS3 table: (final_byte, action) pairs
+; Ends with 0,0
+SS3TBL:
+        DB      'A',ACT_CURUP       ; ESC OA - up arrow
+        DB      'B',ACT_CURDN       ; ESC OB - down arrow
+        DB      'C',ACT_CURRT       ; ESC OC - right arrow
+        DB      'D',ACT_CURLT       ; ESC OD - left arrow
+        DB      'P',ACT_FNDNX       ; ESC OP - F1 find next
+        DB      'Q',ACT_FSAVE       ; ESC OQ - F2 save
+        DB      'R',ACT_BLKMK       ; ESC OR - F3 block mark
+        DB      'S',ACT_MENU        ; ESC OS - F4 menu
+        DB      0,0                 ; end of table
+
+; Ctrl-K prefix table: (char, action) pairs
+; Ends with 0,0
+CTKTBL:
+        DB      'S',ACT_FSAVE       ; ^KS save
+        DB      's',ACT_FSAVE
+        DB      'B',ACT_BLKMK       ; ^KB block mark
+        DB      'b',ACT_BLKMK
+        DB      'C',ACT_BLKCP       ; ^KC block copy
+        DB      'c',ACT_BLKCP
+        DB      'D',ACT_BLKDL       ; ^KD block delete
+        DB      'd',ACT_BLKDL
+        DB      'P',ACT_BLKPS       ; ^KP paste
+        DB      'p',ACT_BLKPS
+        DB      'X',ACT_FEXIT       ; ^KX exit
+        DB      'x',ACT_FEXIT
+        DB      'Q',ACT_FEXIT       ; ^KQ quit
+        DB      'q',ACT_FEXIT
+        DB      0,0                 ; end
+
+; Ctrl-Q prefix table: (char, action) pairs
+CTQTBL:
+        DB      'F',ACT_FNDNX       ; ^QF find
+        DB      'f',ACT_FNDNX
+        DB      'S',ACT_HOME        ; ^QS home (start of row)
+        DB      's',ACT_HOME
+        DB      'D',ACT_END         ; ^QD end (end of row)
+        DB      'd',ACT_END
+        DB      'R',ACT_FTOP        ; ^QR file top
+        DB      'r',ACT_FTOP
+        DB      'C',ACT_FEND        ; ^QC file end
+        DB      'c',ACT_FEND
+        DB      0,0                 ; end
+
+; High-byte key table: (byte, action) pairs
+; For terminals that send single bytes >= 80h for special keys
+; Ends with 0,0
+HKYTBL:
+        DB      0EDH,ACT_CURUP     ; EDh = up arrow
+        DB      0ECH,ACT_CURDN     ; ECh = down arrow
+        DB      0EBH,ACT_CURLT     ; EBh = left arrow
+        DB      0EAH,ACT_CURRT     ; EAh = right arrow
+        DB      0F3H,ACT_TOGIN     ; F3h = insert
+        DB      0F2H,ACT_DELRT     ; F2h = delete
+        DB      0F1H,ACT_HOME      ; F1h = home
+        DB      0F0H,ACT_END       ; F0h = end
+        DB      0EFH,ACT_PGUP      ; EFh = page up
+        DB      0EEH,ACT_PGDN      ; EEh = page down
+        DB      0,0                 ; end of table
+
+;=============================================================
+; DATA SEGMENT
+;=============================================================
+        DSEG
+
+KEYSTATE: DB    0               ; current decode state
+CSIPARM:  DB    0               ; accumulated CSI param
+
+        END
+
