@@ -1,0 +1,1214 @@
+;============================================================
+; FILE:    HEXMNVT.MAC
+; PROJECT: HEDIT - Hex Editor for CP/M 2.2
+; VERSION: 1.03
+; DATE:    2026-04-18
+; AUTHOR:  Claude Code and RetroTechReboot
+;------------------------------------------------------------
+; DESCRIPTION:
+;   Terminal-agnostic ESC menu overlay. Drop-in replacement
+;   for HEXMENU.MAC, used when linking against a screen
+;   driver that does not support ANSI SGR (VT52, ADM-31,
+;   Cromemco 3102). Behaviour is identical to HEXMENU.MAC
+;   except:
+;     - Shortcut letters are plain text (no bold SGR).
+;     - Highlight uses ATTRON/ATROFF imported from the
+;       screen driver, so the reverse-video sequence is
+;       whatever the active terminal uses (e.g. ESC p / ESC q
+;       on VT52).
+;
+;   Menu items (10 total):
+;     1. Open File
+;     2. Save File
+;     3. Save As...
+;     4. Find (hex/ASCII)...
+;     5. Go To Offset...
+;     6. Help / About
+;     7. Base Offset...
+;     8. Toggle Format (BIN/HEX)
+;     9. Fill Block...
+;     0. Exit
+;------------------------------------------------------------
+; REVISION HISTORY:
+;   1.03 2026-04-18  Forked from HEXMENU.MAC for multi-term
+;============================================================
+
+        INCLUDE HEDIT.INC
+
+;--- Imports ----------------------------------------------
+        EXTRN   GETKEY          ; read next key
+        EXTRN   CURBDP          ; current buffer descriptor ptr
+        EXTRN   DIRTY           ; screen redraw flag
+        EXTRN   INSMODE         ; insert/overwrite mode
+        EXTRN   EDITMODE        ; hex/ascii edit mode
+        EXTRN   FIOPEN          ; open file
+        EXTRN   FISAVE          ; save file
+        EXTRN   FIPROMPT        ; prompt for filename
+        EXTRN   FISAVFN         ; copy work FCB to BD_FNAME
+        EXTRN   FISMOD          ; file modified flag check
+        EXTRN   STATMSG         ; status bar message
+        EXTRN   STATCLR         ; clear status bar
+        EXTRN   OUTSTR          ; write $-string
+        EXTRN   OUTCHAR         ; write single char
+        EXTRN   CURGOTO         ; position cursor (B=row,C=col)
+        EXTRN   INFOBAR         ; redraw info bar
+        EXTRN   SCRDRAW         ; full screen redraw
+        EXTRN   GBMVTO          ; move cursor to offset HL
+        EXTRN   GBTXEND         ; get text end -> HL
+        EXTRN   GBCSOFF         ; get cursor offset -> HL
+        EXTRN   GBINSRT         ; insert byte at cursor
+        EXTRN   GBDELRT         ; delete byte right of cursor
+        EXTRN   SRFIND          ; find (hex/ASCII prompt)
+        EXTRN   HLPSHOW         ; help screen
+        EXTRN   DOEXIT          ; exit handler
+        EXTRN   ATTRON          ; reverse video on  ($-string)
+        EXTRN   ATROFF          ; reverse video off ($-string)
+
+;--- Exports ----------------------------------------------
+        PUBLIC  MNUSHOW         ; show menu and process
+
+;--- Menu geometry ----------------------------------------
+; Box occupies rows MNUROW1..MNUROW2, cols MNUCOL1..MNUCOL2
+MNUROW1 EQU     6               ; top border row (1-based)
+MNUROW2 EQU     19              ; bottom border row
+MNUCOL1 EQU     25              ; left border col
+MNUCOL2 EQU     54              ; right border col
+MNUITMS EQU     10              ; number of menu items
+MNUFROW EQU     MNUROW1+3       ; first item row (after border+title+sep)
+MNUTCOL EQU     MNUCOL1+2       ; text start column
+
+;=============================================================
+; MNUSHOW - Display menu, handle navigation, dispatch action.
+; Entry:  (none)
+; Exit:   Selected action performed or cancelled.
+;         Screen dirty flag set.
+;         Regs: all clobbered.
+;=============================================================
+        CSEG
+
+MNUSHOW:
+        ; Draw the menu box
+        CALL    MNUDRAW
+
+        ; Initialise selection to first item
+        MVI     A,0
+        STA     MNUSEL
+
+MNULP:
+        ; Highlight current selection
+        CALL    MNUHIL
+
+        ; Read a key via unified decoder
+        CALL    GETKEY          ; B=type, C=code/char
+        MOV     A,B
+        ORA     A
+        JZ      MNULP           ; KT_NONE, try again
+
+        CPI     KT_ACT
+        JZ      MNUACD          ; action code -> check actions
+
+        ; KT_CHAR: check printable characters
+        MOV     A,C
+        CPI     'K'
+        JZ      MNUUP
+        CPI     'k'
+        JZ      MNUUP
+        CPI     'J'
+        JZ      MNUDN
+        CPI     'j'
+        JZ      MNUDN
+
+        ; Digit shortcut 1-9 -> index 0-8
+        CPI     '1'
+        JC      MNUSC0          ; below '1', check '0'
+        CPI     '9'+1
+        JNC     MNULSC          ; above '9', check letters
+        SUI     '1'             ; 0-based index
+        STA     MNUSEL
+        JMP     MNUACT
+
+        ; Digit '0' -> index 9 (Exit)
+MNUSC0: CPI     '0'
+        JNZ     MNULSC          ; not '0', check letters
+        MVI     A,9
+        STA     MNUSEL
+        JMP     MNUACT
+
+        ; Letter shortcuts (case-insensitive)
+MNULSC: ORI     20H             ; force lowercase
+        CPI     'o'
+        MVI     B,0             ; Open
+        JZ      MNULSL
+        CPI     's'
+        MVI     B,1             ; Save
+        JZ      MNULSL
+        CPI     'a'
+        MVI     B,2             ; Save As
+        JZ      MNULSL
+        CPI     'f'
+        MVI     B,3             ; Find
+        JZ      MNULSL
+        CPI     'g'
+        MVI     B,4             ; Go To
+        JZ      MNULSL
+        CPI     'h'
+        MVI     B,5             ; Help
+        JZ      MNULSL
+        CPI     'b'
+        MVI     B,6             ; Base Offset
+        JZ      MNULSL
+        CPI     't'
+        MVI     B,7             ; Toggle format
+        JZ      MNULSL
+        CPI     'l'
+        MVI     B,8             ; fiLl block
+        JZ      MNULSL
+        CPI     'x'
+        MVI     B,9             ; eXit
+        JZ      MNULSL
+        CPI     'e'
+        MVI     B,9             ; Exit
+        JZ      MNULSL
+        JMP     MNULP           ; unrecognised, ignore
+
+MNULSL: MOV     A,B
+        STA     MNUSEL
+        JMP     MNUACT
+
+MNUACD: ; Action code in C
+        MOV     A,C
+        CPI     ACT_ENTER
+        JZ      MNUACT          ; Enter = select
+        CPI     ACT_CURUP
+        JZ      MNUUP
+        CPI     ACT_CURDN
+        JZ      MNUDN
+        CPI     ACT_MENU
+        JZ      MNUCNC          ; ESC = cancel
+        JMP     MNULP           ; ignore other actions
+
+MNUUP:  LDA     MNUSEL
+        ORA     A
+        JZ      MNULP           ; already at top
+        DCR     A
+        STA     MNUSEL
+        JMP     MNULP
+
+MNUDN:  LDA     MNUSEL
+        CPI     MNUITMS-1
+        JZ      MNULP           ; already at bottom
+        INR     A
+        STA     MNUSEL
+        JMP     MNULP
+
+MNUCNC: ; Cancel: restore screen
+        CALL    MNUCLR
+        CALL    SCRDRAW
+        CALL    INFOBAR
+        RET
+
+MNUACT: ; Dispatch selected item
+        CALL    MNUCLR          ; remove menu overlay
+        CALL    SCRDRAW         ; full screen redraw
+        CALL    INFOBAR         ; redraw info bar
+
+        LDA     MNUSEL          ; 0-based index
+        MOV     L,A
+        MVI     H,0
+        DAD     H               ; *2 for word table
+        LXI     D,MNUTBL
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M             ; DE = handler address
+        XCHG
+        PCHL                    ; jump to handler
+
+;=============================================================
+; Menu item handlers
+;=============================================================
+
+;--- 1. Open File -----------------------------------------
+MNOPEN:
+        LXI     D,OPNPMT
+        CALL    FIPROMPT        ; prompt, parse into WRKFCB
+        JZ      MNODNE          ; cancelled
+        LXI     D,0             ; DE=0: WRKFCB already set
+        CALL    FIOPEN
+        MVI     A,1
+        STA     DIRTY
+MNODNE: RET
+
+;--- 2. Save File -----------------------------------------
+MNSAVE:
+        CALL    FISAVE
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 3. Save As -------------------------------------------
+MNSVAS:
+        LXI     D,SVAPMT
+        CALL    FIPROMPT        ; prompt, parse into WRKFCB
+        JZ      MNSADN          ; cancelled
+        CALL    FISAVFN         ; copy WRKFCB name to BD_FNAME
+        ; Force modified so FISAVE always writes
+        LHLD    CURBDP
+        MOV     A,L
+        ADI     BD_MODIF
+        MOV     L,A
+        MOV     A,H
+        ACI     0
+        MOV     H,A
+        MVI     M,1             ; BD_MODIF = 1
+        CALL    FISAVE
+MNSADN: MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 4. Find (hex/ASCII) ----------------------------------
+MNFIND:
+        CALL    SRFIND
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 5. Go To Offset --------------------------------------
+MNGOTO:
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,GTOPMT
+        CALL    OUTSTR
+        ; Read hex offset from user
+        CALL    RDHEX4          ; HL = 16-bit address, CY=cancelled
+        JC      MNGDNE          ; cancelled
+        ; Clamp to TXEND
+        PUSH    H               ; save target
+        CALL    GBTXEND         ; HL = text end
+        XCHG                    ; DE = TXEND
+        POP     H               ; HL = target
+        ; Compare HL with DE (target with TXEND)
+        MOV     A,H
+        CMP     D
+        JC      MNGOK           ; target.H < TXEND.H: ok
+        JNZ     MNGCLM          ; target.H > TXEND.H: clamp
+        MOV     A,L
+        CMP     E
+        JC      MNGOK           ; target < TXEND: ok
+MNGCLM: ; Clamp: target = TXEND-1 (or 0 if empty)
+        MOV     A,D
+        ORA     E
+        JZ      MNGOK           ; TXEND=0, target=0
+        XCHG                    ; HL = TXEND
+        DCX     H               ; HL = TXEND-1
+MNGOK:  CALL    GBMVTO          ; move cursor to HL
+        MVI     A,1
+        STA     DIRTY
+MNGDNE: RET
+
+;--- 6. Help ----------------------------------------------
+MNHELP:
+        CALL    HLPSHOW
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 7. Base Offset (for Intel HEX files) ----------------
+MNBOFF:
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,BOFPMT
+        CALL    OUTSTR
+        ; Read 2 hex digits (MSByte of base address)
+        CALL    RDHEX2          ; A = byte, CY = cancelled
+        JC      MNBFDN          ; cancelled
+        ; Store as high byte of BD_BADDR, low byte = 00
+        MOV     D,A             ; D = MSByte
+        LHLD    CURBDP
+        PUSH    D
+        MVI     A,BD_BADDR
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A             ; HL -> BD_BADDR
+        POP     D
+        MVI     M,0             ; low byte = 00
+        INX     H
+        MOV     M,D             ; high byte = user input
+        CALL    STATCLR
+        LXI     D,BOFSET
+        CALL    STATMSG
+MNBFDN: MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 8. Toggle Format (BIN/HEX) --------------------------
+MNTFMT:
+        LHLD    CURBDP
+        MOV     A,L
+        ADI     BD_FILEFMT
+        MOV     L,A
+        MOV     A,H
+        ACI     0
+        MOV     H,A             ; HL -> BD_FILEFMT
+        MOV     A,M
+        XRI     1               ; toggle 0<->1
+        MOV     M,A
+        ; Show confirmation
+        ORA     A
+        JNZ     MTFIHX
+        LXI     D,MTFBIN
+        JMP     MTFMSG
+MTFIHX: LXI     D,MTFHEX
+MTFMSG: CALL    STATMSG
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;--- 9. Fill Block ----------------------------------------
+; Prompts for start address, end address, and fill byte.
+; Validates end >= start, handles buffer extension and
+; overwrite confirmation.
+;----------------------------------------------------------
+MNFILL:
+        ; Prompt for start address
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        CALL    STATCLR
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,FLSPMT
+        CALL    OUTSTR
+        CALL    RDHEX4          ; HL = start address
+        JC      MFLDNE          ; ESC = cancel
+        LDA     RDHCNT
+        ORA     A
+        JZ      MFLDNE          ; empty input = abort
+
+        SHLD    FLSTRT          ; save start address
+
+        ; Prompt for end address (continue on same line)
+        LXI     D,FLEPMT
+        CALL    OUTSTR
+        CALL    RDHEX4          ; HL = end address
+        JC      MFLDNE          ; ESC = cancel
+        LDA     RDHCNT
+        ORA     A
+        JZ      MFLDNE          ; empty input = abort
+
+        SHLD    FLEND           ; save end address
+
+        ; Validate: end >= start
+        XCHG                    ; DE = end
+        LHLD    FLSTRT          ; HL = start
+        ; Compare: if end < start, error
+        MOV     A,D
+        CMP     H
+        JC      MFLERR          ; end.H < start.H
+        JNZ     MFLVOK          ; end.H > start.H: ok
+        MOV     A,E
+        CMP     L
+        JC      MFLERR          ; end < start
+
+MFLVOK:
+        ; Prompt for fill byte (continue on same line)
+        LXI     D,FLBPMT
+        CALL    OUTSTR
+        CALL    RDHEX2          ; A = fill byte
+        JC      MFLDNE          ; ESC = cancel
+        STA     FLBYTE          ; save fill byte BEFORE checking count
+        LDA     RDHCNT
+        ORA     A
+        JZ      MFLDNE          ; empty input = abort
+
+        ; Get current buffer data length
+        CALL    GBTXEND         ; HL = TXEND
+        SHLD    FLOTXE          ; save original TXEND
+
+        ; Case 1: Start is beyond current data end
+        ; Need to fill gap from TXEND to FLSTRT-1 with 00
+        XCHG                    ; DE = TXEND
+        LHLD    FLSTRT          ; HL = start
+        ; Compare: if start > TXEND, gap exists
+        MOV     A,H
+        CMP     D
+        JC      MFLNO2          ; start.H < TXEND.H: no gap
+        JNZ     MFLGAP          ; start.H > TXEND.H: gap
+        MOV     A,L
+        CMP     E
+        JC      MFLNO2          ; start < TXEND: no gap
+        JZ      MFLNO2          ; start = TXEND: no gap
+        ; start > TXEND: gap exists
+
+MFLGAP:
+        ; Ask user about gap fill
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        CALL    STATCLR
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,FLGAPM
+        CALL    OUTSTR
+        MVI     C,BF_CONIN
+        CALL    BDOS
+        CPI     'Y'
+        JZ      MFLGPF
+        CPI     'y'
+        JZ      MFLGPF
+        JMP     MFLDNE          ; user declined
+
+MFLGPF:
+        ; Fill gap: move cursor to TXEND, insert 00 bytes
+        ; up to FLSTRT
+        LHLD    FLOTXE          ; original TXEND
+        CALL    GBMVTO          ; cursor to end of data
+        ; Count = FLSTRT - TXEND
+        LHLD    FLSTRT
+        XCHG                    ; DE = FLSTRT
+        LHLD    FLOTXE          ; HL = old TXEND
+        MOV     A,E
+        SUB     L
+        MOV     L,A
+        MOV     A,D
+        SBB     H
+        MOV     H,A             ; HL = gap count
+        SHLD    MFLCNT          ; save count
+
+MFLGLP:
+        LHLD    MFLCNT
+        MOV     A,H
+        ORA     L
+        JZ      MFLGDN          ; gap filled
+        XRA     A               ; A = 00
+        CALL    GBINSRT         ; insert 00 byte
+        CPI     0FFH
+        JZ      MFLFLL          ; buffer full
+        LHLD    MFLCNT
+        DCX     H
+        SHLD    MFLCNT
+        JMP     MFLGLP
+
+MFLGDN:
+        ; Update saved TXEND (gap bytes now part of data)
+        CALL    GBTXEND
+        SHLD    FLOTXE
+        JMP     MFLFIL          ; proceed to fill
+
+MFLNO2:
+        ; Case 2: Start is within existing data
+        ; Check if any existing data will be overwritten
+        LHLD    FLOTXE          ; HL = TXEND
+        XCHG                    ; DE = TXEND
+        LHLD    FLSTRT          ; HL = start
+        ; If start < TXEND, some data exists in range
+        MOV     A,H
+        CMP     D
+        JC      MFLOVW          ; start.H < TXEND.H: overlap
+        JNZ     MFLFIL          ; start.H > TXEND.H: no overlap
+        MOV     A,L
+        CMP     E
+        JC      MFLOVW          ; start < TXEND: overlap
+        JMP     MFLFIL          ; start >= TXEND: no overlap
+
+MFLOVW:
+        ; Confirm overwrite
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        CALL    STATCLR
+        MVI     B,STATROW
+        MVI     C,1
+        CALL    CURGOTO
+        LXI     D,FLOVWM
+        CALL    OUTSTR
+        MVI     C,BF_CONIN
+        CALL    BDOS
+        CPI     'Y'
+        JZ      MFLFIL
+        CPI     'y'
+        JZ      MFLFIL
+        JMP     MFLDNE          ; user declined
+
+MFLFIL:
+        ; Show "Fill running..." status
+        CALL    STATCLR
+        LXI     D,FLRUNM
+        CALL    STATMSG
+
+        ; Main fill loop
+        ; Move cursor to start offset
+        LHLD    FLSTRT
+        CALL    GBMVTO
+
+        ; Compute fill count = FLEND - FLSTRT + 1
+        LHLD    FLEND
+        XCHG                    ; DE = FLEND
+        LHLD    FLSTRT          ; HL = FLSTRT
+        MOV     A,E
+        SUB     L
+        MOV     L,A
+        MOV     A,D
+        SBB     H
+        MOV     H,A             ; HL = FLEND - FLSTRT
+        INX     H               ; +1 for inclusive end
+        SHLD    MFLCNT          ; total bytes to fill
+
+        ; Track current position for overwrite vs insert
+        LHLD    FLSTRT
+        SHLD    MFLPOS          ; current fill position
+
+MFLLP:
+        LHLD    MFLCNT
+        MOV     A,H
+        ORA     L
+        JZ      MFLOK           ; done filling
+
+        ; Check if current position < original TXEND (overwrite)
+        LHLD    MFLPOS
+        XCHG                    ; DE = current pos
+        LHLD    FLOTXE          ; HL = original TXEND
+        ; if pos < TXEND: overwrite (delete + insert)
+        MOV     A,D
+        CMP     H
+        JC      MFLOVR          ; pos.H < TXEND.H: overwrite
+        JNZ     MFLINS          ; pos.H > TXEND.H: insert
+        MOV     A,E
+        CMP     L
+        JC      MFLOVR          ; pos < TXEND: overwrite
+        JMP     MFLINS          ; pos >= TXEND: insert
+
+MFLOVR:
+        ; Overwrite: delete right then insert fill byte
+        CALL    GBDELRT         ; delete byte at cursor
+        LDA     FLBYTE
+        CALL    GBINSRT         ; insert fill byte
+        CPI     0FFH
+        JZ      MFLFLL          ; buffer full (shouldn't happen)
+        JMP     MFLNXT
+
+MFLINS:
+        ; Insert: just insert fill byte
+        LDA     FLBYTE
+        CALL    GBINSRT
+        CPI     0FFH
+        JZ      MFLFLL          ; buffer full
+        ;JMP     MFLNXT         ; fall through
+
+MFLNXT:
+        ; Advance position and decrement count
+        LHLD    MFLPOS
+        INX     H
+        SHLD    MFLPOS
+        LHLD    MFLCNT
+        DCX     H
+        SHLD    MFLCNT
+        JMP     MFLLP
+
+MFLOK:
+        ; Move cursor to start of fill area
+        LHLD    FLSTRT
+        CALL    GBMVTO
+        MVI     A,1
+        STA     DIRTY
+        CALL    STATCLR
+        LXI     D,FLDONE
+        JMP     STATMSG
+
+MFLERR:
+        ; End < Start error
+        CALL    STATCLR
+        LXI     D,FLERMG
+        JMP     STATMSG
+
+MFLFLL:
+        ; Buffer full error
+        LHLD    FLSTRT
+        CALL    GBMVTO
+        MVI     A,1
+        STA     DIRTY
+        CALL    STATCLR
+        LXI     D,FLFULL
+        JMP     STATMSG
+
+MFLDNE:
+        RET
+
+;--- 0. Exit ----------------------------------------------
+MNQUIT:
+        JMP     DOEXIT
+
+;=============================================================
+; RDHEX4 - Read up to 4 hex chars from user, return 16-bit
+;          value in HL.
+; Entry:  Cursor positioned for input.
+; Exit:   HL = parsed value, CY clear.
+;         CY set if ESC pressed (cancelled).
+;         Regs: all clobbered.
+;=============================================================
+RDHEX4:
+        LXI     H,0
+        SHLD    RDHVAL          ; accumulator = 0
+        MVI     A,0
+        STA     RDHCNT          ; digit count = 0
+
+RDHLP:  ; Read one key (blocking)
+        MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JZ      RDHLP           ; no char, poll again
+
+        ; Check ESC -> cancel
+        CPI     ESC
+        JZ      RDHESC
+
+        ; Check Enter -> done
+        CPI     CR
+        JZ      RDHDNE
+
+        ; Check backspace
+        CPI     BS
+        JZ      RDHBS
+        CPI     DEL
+        JZ      RDHBS
+
+        ; Check if valid hex digit
+        CPI     '0'
+        JC      RDHLP           ; < '0', ignore
+        CPI     '9'+1
+        JC      RDHDIG_LBL      ; '0'-'9'
+        CPI     'A'
+        JC      RDHLP           ; between '9' and 'A', ignore
+        CPI     'F'+1
+        JC      RDHUPR          ; 'A'-'F'
+        CPI     'a'
+        JC      RDHLP           ; ignore
+        CPI     'f'+1
+        JNC     RDHLP           ; > 'f', ignore
+        ; 'a'-'f': convert to upper
+        SUI     20H
+
+RDHUPR: ; A = 'A'-'F', convert to value 10-15
+        SUI     'A'-10
+        JMP     RDHVAL2
+
+RDHDIG_LBL: ; A = '0'-'9', convert to value 0-9
+        SUI     '0'
+
+RDHVAL2:
+        ; Check digit count < 4
+        PUSH    PSW             ; save digit value
+        LDA     RDHCNT
+        CPI     4
+        JNC     RDHFUL          ; already 4 digits
+        INR     A
+        STA     RDHCNT
+        POP     PSW             ; restore digit value
+
+        ; Shift accumulator left 4 bits, add new digit
+        ; RDHVAL = RDHVAL << 4 | digit
+        STA     RDHDIG          ; save digit
+        LHLD    RDHVAL
+        DAD     H               ; *2
+        DAD     H               ; *4
+        DAD     H               ; *8
+        DAD     H               ; *16
+        LDA     RDHDIG
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        SHLD    RDHVAL
+
+        ; Echo the digit character
+        LDA     RDHDIG
+        CPI     10
+        JC      RDHEC0
+        ADI     'A'-10
+        JMP     RDHECO
+RDHEC0: ADI     '0'
+RDHECO: MOV     E,A
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        JMP     RDHLP
+
+RDHFUL: POP     PSW             ; discard digit value
+        JMP     RDHLP           ; ignore extra digits
+
+RDHBS:  ; Backspace: remove last digit
+        LDA     RDHCNT
+        ORA     A
+        JZ      RDHLP           ; nothing to erase
+        DCR     A
+        STA     RDHCNT
+        ; Shift accumulator right 4 bits
+        LHLD    RDHVAL
+        ; HL >> 4: shift right by 4
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        MOV     B,A             ; B = H >> 4
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0F0H
+        MOV     C,A             ; C = (H & 0F) << 4
+        MOV     A,L
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        ORA     C
+        MOV     L,A             ; L = ((H & 0F) << 4) | (L >> 4)
+        MOV     H,B             ; H = H >> 4
+        SHLD    RDHVAL
+        ; Erase character on screen: BS, space, BS
+        MVI     E,BS
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        MVI     E,' '
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        MVI     E,BS
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        JMP     RDHLP
+
+RDHESC: ; Cancel
+        STC                     ; set carry = cancelled
+        RET
+
+RDHDNE: ; Done, return value in HL
+        LHLD    RDHVAL
+        ORA     A               ; clear carry
+        RET
+
+;=============================================================
+; RDHEX2 - Read up to 2 hex chars, return byte in A.
+; Entry:  Cursor positioned for input.
+; Exit:   A = byte value, CY clear.
+;         CY set if ESC pressed (cancelled).
+;=============================================================
+RDHEX2:
+        LXI     H,0
+        SHLD    RDHVAL
+        MVI     A,0
+        STA     RDHCNT
+
+RDH2LP: MVI     E,0FFH
+        MVI     C,BF_RAWIO
+        CALL    BDOS
+        ORA     A
+        JZ      RDH2LP
+
+        CPI     ESC
+        JZ      RDHESC          ; cancel (shared with RDHEX4)
+
+        CPI     CR
+        JZ      RDH2DN          ; done
+
+        CPI     BS
+        JZ      RDH2BS          ; backspace (RDHEX2 own handler)
+        CPI     DEL
+        JZ      RDH2BS
+
+        ; Valid hex digit?
+        CPI     '0'
+        JC      RDH2LP
+        CPI     '9'+1
+        JC      RDH2DG
+        CPI     'A'
+        JC      RDH2LP
+        CPI     'F'+1
+        JC      RDH2UP
+        CPI     'a'
+        JC      RDH2LP
+        CPI     'f'+1
+        JNC     RDH2LP
+        SUI     20H             ; to upper
+
+RDH2UP: SUI     'A'-10
+        JMP     RDH2V2
+
+RDH2DG: SUI     '0'
+
+RDH2V2: ; Check digit count < 2
+        PUSH    PSW
+        LDA     RDHCNT
+        CPI     2
+        JNC     RDH2FL          ; already 2 digits
+        INR     A
+        STA     RDHCNT
+        POP     PSW
+
+        ; Shift and add
+        STA     RDHDIG
+        LHLD    RDHVAL
+        DAD     H
+        DAD     H
+        DAD     H
+        DAD     H
+        LDA     RDHDIG
+        ADD     L
+        MOV     L,A
+        MVI     A,0
+        ADC     H
+        MOV     H,A
+        SHLD    RDHVAL
+
+        ; Echo
+        LDA     RDHDIG
+        CPI     10
+        JC      RDH2E0
+        ADI     'A'-10
+        JMP     RDH2EC
+RDH2E0: ADI     '0'
+RDH2EC: MOV     E,A
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        JMP     RDH2LP
+
+RDH2FL: POP     PSW
+        JMP     RDH2LP
+
+RDH2BS: ; Backspace for RDHEX2 (same logic as RDHBS but returns to RDH2LP)
+        LDA     RDHCNT
+        ORA     A
+        JZ      RDH2LP          ; nothing to erase
+        DCR     A
+        STA     RDHCNT
+        ; Shift accumulator right 4 bits
+        LHLD    RDHVAL
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        MOV     B,A             ; B = H >> 4
+        MOV     A,H
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0F0H
+        MOV     C,A             ; C = (H & 0F) << 4
+        MOV     A,L
+        RRC
+        RRC
+        RRC
+        RRC
+        ANI     0FH
+        ORA     C
+        MOV     L,A             ; L = ((H & 0F) << 4) | (L >> 4)
+        MOV     H,B             ; H = H >> 4
+        SHLD    RDHVAL
+        ; Erase character on screen: BS, space, BS
+        MVI     E,BS
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        MVI     E,' '
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        MVI     E,BS
+        MVI     C,BF_CONOUT
+        CALL    BDOS
+        JMP     RDH2LP
+
+RDH2DN: ; Return low byte in A
+        LDA     RDHVAL          ; low byte of accumulator
+        ORA     A               ; clear carry
+        RET
+
+;=============================================================
+; MNUDRAW - Draw the menu box and all items.
+;=============================================================
+MNUDRAW:
+        ; Top border line
+        MVI     B,MNUROW1
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUTOP
+        CALL    OUTSTR
+
+        ; Title row
+        MVI     B,MNUROW1+1
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUTIT
+        CALL    OUTSTR
+
+        ; Separator under title
+        MVI     B,MNUFROW-1
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUSEP
+        CALL    OUTSTR
+
+        ; Draw each item row
+        XRA     A
+        STA     MNUIDX          ; item index = 0
+MNUDRW:
+        LDA     MNUIDX
+        CPI     MNUITMS
+        JZ      MNUDRB          ; done items
+
+        ; Row for item: MNUFROW + index
+        ADI     MNUFROW
+        MOV     B,A
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+
+        ; Left border
+        LXI     D,MNULFT
+        CALL    OUTSTR
+
+        ; Item text: index into MNUTXP table
+        LDA     MNUIDX
+        MOV     L,A
+        MVI     H,0
+        DAD     H               ; *2
+        LXI     D,MNUTXP
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M             ; DE = item text
+        CALL    OUTSTR
+
+        ; Right border
+        LXI     D,MNURGT
+        CALL    OUTSTR
+
+        LDA     MNUIDX
+        INR     A
+        STA     MNUIDX
+        JMP     MNUDRW
+
+MNUDRB:
+        ; Bottom border
+        LDA     MNUIDX
+        ADI     MNUFROW
+        MOV     B,A
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+        LXI     D,MNUBOT
+        JMP     OUTSTR
+
+;=============================================================
+; MNUHIL - Highlight the currently selected item.
+; Redraws all items in normal/reverse video as appropriate.
+;=============================================================
+MNUHIL:
+        MVI     A,0
+        STA     MNUIDX          ; current item = 0
+MNUHLP:
+        LDA     MNUIDX
+        CPI     MNUITMS
+        RZ
+
+        ; Compute row
+        ADI     MNUFROW
+        MOV     B,A
+
+        ; Position at text column
+        MVI     C,MNUTCOL
+        CALL    CURGOTO
+
+        ; Set attribute: reverse if selected, normal otherwise
+        LDA     MNUIDX
+        MOV     B,A             ; B = current item
+        LDA     MNUSEL
+        CMP     B               ; selected == current?
+        JNZ     MNUHNR          ; not selected
+        LXI     D,ATTRON
+        CALL    OUTSTR
+        JMP     MNUHTS
+
+MNUHNR: LXI     D,ATROFF
+        CALL    OUTSTR
+
+MNUHTS:
+        ; Print item text
+        LDA     MNUIDX
+        MOV     L,A
+        MVI     H,0
+        DAD     H
+        LXI     D,MNUTXP
+        DAD     D
+        MOV     E,M
+        INX     H
+        MOV     D,M
+        CALL    OUTSTR
+
+        ; Reset attribute
+        LXI     D,ATROFF
+        CALL    OUTSTR
+
+        LDA     MNUIDX
+        INR     A
+        STA     MNUIDX
+        JMP     MNUHLP
+
+;=============================================================
+; MNUCLR - Clear the menu area (restore edit screen).
+; Redraws each row occupied by the menu with spaces.
+;=============================================================
+MNUCLR:
+        MVI     A,MNUROW1
+        STA     MNUIDX          ; row counter
+
+MNUCLP:
+        LDA     MNUIDX
+        CPI     MNUROW2+1
+        JZ      MNUCDN
+
+        MOV     B,A
+        MVI     C,MNUCOL1
+        CALL    CURGOTO
+
+        ; Emit MNUCOL2-MNUCOL1+1 spaces
+        MVI     B,MNUCOL2-MNUCOL1+1
+MNUCSP: MVI     A,' '
+        PUSH    B               ; save space counter
+        CALL    OUTCHAR
+        POP     B
+        DCR     B
+        JNZ     MNUCSP
+
+        LDA     MNUIDX
+        INR     A
+        STA     MNUIDX
+        JMP     MNUCLP
+
+MNUCDN: ; Set DIRTY so main loop redraws edit area
+        MVI     A,1
+        STA     DIRTY
+        RET
+
+;=============================================================
+; String constants (CSEG)
+;=============================================================
+
+; Menu box borders ($ terminated)
+; Width = 30 chars (MNUCOL2-MNUCOL1+1)
+MNUTOP: DB      '+','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','+','$'
+
+MNUTIT: DB      '|','       HEDIT  MENU          ','|','$'
+
+MNUSEP: DB      '+','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','+','$'
+
+MNULFT: DB      '|',' ','$'
+MNURGT: DB      ' ','|','$'
+
+MNUBOT: DB      '+','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','=','=','=','='
+        DB      '=','=','=','=','=','=','=','+','$'
+
+; Item text strings (plain text, no SGR)
+;              visible:  1234567890123456789012345678
+;                       |--- 26 visible chars ---|
+MNTX1:  DB      '1. Open File              $'
+MNTX2:  DB      '2. Save File              $'
+MNTX3:  DB      '3. Save As...             $'
+MNTX4:  DB      '4. Find (hex/ASCII)...    $'
+MNTX5:  DB      '5. Go To Offset...        $'
+MNTX6:  DB      '6. Help / About           $'
+MNTX7:  DB      '7. Base Offset...         $'
+MNTX8:  DB      '8. Toggle Format (B/H)    $'
+MNTX9:  DB      '9. Fill Block...           $'
+MNTX0:  DB      '0. Exit                   $'
+
+; Prompt strings
+OPNPMT: DB      'Open file: $'
+SVAPMT: DB      'Save as: $'
+GTOPMT: DB      'Go to offset (hex): $'
+BOFPMT: DB      'Base offset (00-FF): $'
+BOFSET: DB      'Base offset set.$'
+MTFBIN: DB      'Format: Binary$'
+MTFHEX: DB      'Format: Intel HEX$'
+; Fill prompts and messages
+FLSPMT: DB      'Fill start (hex): $'
+FLEPMT: DB      ' End: $'
+FLBPMT: DB      ' Byte: $'
+FLERMG: DB      'End < Start!$'
+FLOVWM: DB      'Overwrite existing data? (Y/N) $'
+FLGAPM: DB      'Fill gap from data end? (Y/N) $'
+FLFULL: DB      'Buffer full!$'
+FLRUNM: DB      'Fill running...$'
+FLDONE: DB      'Fill complete.$'
+
+; Dispatch table (CSEG): order matches MNUITMS
+MNUTBL:
+        DW      MNOPEN          ; 0 Open File
+        DW      MNSAVE          ; 1 Save File
+        DW      MNSVAS          ; 2 Save As
+        DW      MNFIND          ; 3 Find
+        DW      MNGOTO          ; 4 Go To Offset
+        DW      MNHELP          ; 5 Help / About
+        DW      MNBOFF          ; 6 Base Offset
+        DW      MNTFMT          ; 7 Toggle Format
+        DW      MNFILL          ; 8 Fill Block
+        DW      MNQUIT          ; 9 Exit
+
+; Item text pointer table (CSEG)
+MNUTXP:
+        DW      MNTX1
+        DW      MNTX2
+        DW      MNTX3
+        DW      MNTX4
+        DW      MNTX5
+        DW      MNTX6
+        DW      MNTX7
+        DW      MNTX8
+        DW      MNTX9
+        DW      MNTX0
+
+;=============================================================
+; DATA SEGMENT
+;=============================================================
+        DSEG
+
+MNUSEL: DB      0               ; current selection (0-based)
+MNUIDX: DB      0               ; loop index
+
+; Menu input buffer (shared by Open, Save As, Go To)
+MNUIBUF: DB     16              ; max length
+         DB     0               ; actual length
+         DS     18              ; input chars + margin
+
+; MNUINP alias (general input work area)
+MNUINP: DS      16
+
+; RDHEX4 working variables
+RDHVAL: DW      0               ; hex accumulator
+RDHCNT: DB      0               ; digit count
+RDHDIG: DB      0               ; current digit value
+
+; Fill block working variables
+FLSTRT: DW      0               ; fill start address
+FLEND:  DW      0               ; fill end address
+FLBYTE: DB      0               ; fill byte value
+FLOTXE: DW      0               ; original TXEND before fill
+MFLCNT: DW      0               ; fill loop counter
+MFLPOS: DW      0               ; current fill position
+
+        END
+
